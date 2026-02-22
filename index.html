@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DASSEIN</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rubik+Iso&family=Space+Grotesk:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main>
+      <section class="hero" aria-label="Hero section">
+        <h1>DASSEIN</h1>
+      </section>
+
+      <section class="model-section" aria-label="Interactive 3D model">
+        <div class="model-meta">
+          <button class="model-title" type="button" aria-describedby="tea-popup">茶盘</button>
+          <p id="tea-popup" class="model-popup" role="note">A zen tea tray for calm, intentional tea sessions.</p>
+        </div>
+        <div id="model-stage" class="model-stage" role="img" aria-label="Interactive 3D model"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
