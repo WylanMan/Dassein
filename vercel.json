@@ -1,12 +1,8 @@
 {
   "functions": {
-    "api/**/*.py": {
-      "runtime": "python3.12",
+    "api/index.py": {
+      "runtime": "@vercel/python",
       "maxDuration": 30
     }
-  },
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api" }
-  ],
-  "buildCommand": "pip install -r api/requirements.txt"
+  }
 }
