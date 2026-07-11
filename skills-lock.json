@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "cinematic-scroll": {
+      "source": "MustBeSimo/cinematic-scroll-skill",
+      "sourceType": "github",
+      "skillPath": ".codex/skills/cinematic-scroll/SKILL.md",
+      "computedHash": "6eb1f54bf2d5ce5592cfef3e4f84fed07ec0fd143476c7f6a3115331e00fdb56"
+    },
+    "css-animation": {
+      "source": "neonwatty/css-animation-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "0633f391175fa0a5a53317f5ca488b5fe47ec1b8f3da8d16be04f1e94df3bd17"
+    },
+    "frontend-design": {
+      "source": "anthropics/claude-code",
+      "sourceType": "github",
+      "skillPath": "plugins/frontend-design/skills/frontend-design/SKILL.md",
+      "computedHash": "3e0be122a3db8206b6d0d6b07cca898b5c75fb9b7b2101abe143fb2851734d2e"
+    }
+  }
+}
