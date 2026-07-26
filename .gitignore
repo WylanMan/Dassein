@@ -5,3 +5,7 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 node_modules/
+.vercel
+.env*
+.playwright-mcp/
+three.min.js

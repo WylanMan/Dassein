@@ -1,31 +1,42 @@
-# Dassein — Agent Notes
+# SelfShip — Agent Notes
 
 ## What this is
 
-A static single-page site that renders a 3D interactive Chinese tea tray model using Three.js. Deployed on Vercel.
+A single-page web app that simulates an autonomous feature pipeline: type a natural-language feature request, and it animates through Parsing intent → Generating code → Creating PR → Running tests → Deploying preview → Done, mutating a live embedded to-do app as the "deployment". Fully client-side, mock data, fake async delays — no backend, no GitHub integration.
+
+Live at https://selfship.vercel.app
 
 ## Structure
 
 | File | Role |
 |---|---|
-| `index.html` | Entry point — no build step |
-| `app.js` | Three.js scene setup, STL loader, orbit controls |
-| `styles.css` | Dark theme, hero + model sections |
-| `chinese-tea-tray.stl` | 3D model asset |
-| `canvas/` | Empty directory (reserved) |
+| `index.html` | Both views (landing + pipeline dashboard) — no build step |
+| `styles.css` | Terminal-noir design system, glassmorphism, preview app theming |
+| `app.js` | Particles, pipeline state machine, feature engine, fake artifacts, confetti |
+| `.vercelignore` | Keeps legacy/venv/log junk out of deployments |
 
 ## Key conventions
 
-- **No build tool** — serve files directly (e.g. `npx serve .` or VS Code Live Server)
-- **Three.js via importmap** from CDN (`unpkg.com/three@0.164.1`), not bundled
-- **Only npm dependency**: `@vercel/analytics` — run `npm install` before deploying
-- STL model is loaded at runtime from `./chinese-tea-tray.stl`
+- **No build tool, no dependencies** — serve statically (`npx serve .` or `python3 -m http.server`)
+- Fonts via Google Fonts (Space Grotesk display + JetBrains Mono)
+- The preview to-do app is real DOM, scoped under `.todoapp` / `.pv-*` classes with its own CSS vars (light default, `.pv-dark` for dark mode) so dashboard styles never leak in
 
 ## App logic summary
 
-`app.js` creates a Three.js scene with:
-- Perspective camera at `(0, 4.8, 5.8)` with 42° FOV
-- OrbitControls (damped, distance 3.3–11, polar angle capped at ~86°)
-- Three-point lighting (key, rim, fill)
-- Auto-orients the STL so its flattest face sits down, then flips it upright
-- Scales the model to fit within a 5.8-unit bounding box
+`app.js` is organized in sections:
+
+1. **Particles** — canvas constellation background; static frame if `prefers-reduced-motion`
+2. **To-do app** (`mountTodoApp`, `renderTodos`, `syncChrome`) — interactive: add/toggle/delete/filter all work; feature flags in `todo.features` gate per-feature row controls
+3. **Feature engine** (`FEATURES`) — regex intent match → `{ files, tests, apply() }`; up to 3 matches compose, `makeCustomFeature()` is the fallback for unmatched requests
+4. **Pipeline runner** (`runPipeline`) — token-cancellable async sequence; streams timestamped logs to `#terminal`, drives step states, mounts preview + applies hot updates with scanline/toast at the deploy step
+5. **PR card + merge** — diff renderer with add/del/hunk line types; merge fires canvas confetti and flips status pill to violet `merged`
+
+## Adding a new simulated feature
+
+Push an object onto `FEATURES` with: `id`, `match` (regex), `intent`, `title`, `hotLabel`, `branch`, `commit`, `files[]` (path + added/removed + diff lines `{t: "+|-| |h", x}`), `tests[]`, and `apply()` which mutates the mounted to-do app.
+
+## Deploy
+
+```bash
+npx vercel deploy --prod --yes   # linked to project "selfship" (wylanmans-projects)
+```

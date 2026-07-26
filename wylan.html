@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wylan Man — Dassein</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=Caveat:wght@400;600&family=Space+Grotesk:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #05080f;
+      color: #d7e1ee;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      overflow-x: hidden;
+    }
+
+    #scene {
+      position: fixed; inset: 0; z-index: 0;
+      width: 100vw; height: 100vh;
+      opacity: 0.5;
+    }
+
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      padding: 20px 10vw;
+      background: rgba(5, 8, 15, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    nav ul {
+      list-style: none; display: flex; gap: 28px;
+      font-family: "Caveat", cursive; font-size: 18px;
+      align-items: center;
+    }
+
+    nav li:first-child {
+      color: #d7e1ee;
+    }
+
+    nav a {
+      color: #7286a0;
+      text-decoration: none;
+      transition: color 0.3s;
+    }
+
+    nav a.active { color: #3dffb8; }
+
+    main {
+      position: relative; z-index: 1;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 120px 10vw 80px;
+    }
+
+    section { margin: 80px 0; }
+
+    h1 {
+      font-family: "Playfair Display", serif;
+      font-size: clamp(40px, 6vw, 64px);
+      font-weight: 700;
+      color: #d7e1ee;
+    }
+
+    h2 {
+      font-family: "Playfair Display", serif;
+      font-size: 28px;
+      margin-top: 48px;
+      font-weight: 700;
+      color: #d7e1ee;
+    }
+
+    h3 {
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 18px;
+      margin-top: 32px;
+      color: #d7e1ee;
+    }
+
+    p {
+      color: #7286a0;
+      line-height: 1.8;
+      font-size: 16px;
+      margin-top: 12px;
+    }
+
+    a {
+      color: #3dffb8;
+      text-decoration: none;
+    }
+
+    ul, ol {
+      color: #7286a0;
+      line-height: 1.8;
+      margin-top: 12px;
+      padding-left: 20px;
+    }
+
+    li { margin-bottom: 8px; }
+
+    strong { color: #d7e1ee; }
+  </style>
+</head>
+<body>
+
+  <canvas id="scene"></canvas>
+
+  <nav>
+    <ul>
+      <li>Dassein</li>
+      <li><a href="/">home</a></li>
+      <li><a href="/wylan.html" class="active">wylan</a></li>
+      <li><a href="/blogs.html">blogs</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <h1>Wylan Man</h1>
+    <p>Multi-Agent Systems Architect</p>
+
+    <p>I build agent systems that automate your operations. You have a manual, fragmented workflow that needs multiple people to run. I design and ship coordinated AI agent systems that automate it — so your team focuses on decisions, not data entry.</p>
+
+    <p>
+      <a href="mailto:wylan.man@gmail.com">Email</a>
+      <a href="tel:+447490685222">+44 7490 685222</a>
+    </p>
+
+    <section>
+      <h2>Track record</h2>
+      <ul>
+        <li><strong>12</strong> agent systems built — +3 this year</li>
+        <li><strong>14</strong> projects shipped — all on time and budget</li>
+        <li><strong>100%</strong> repeat engagement rate — clients come back</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>About</h2>
+      <p>I turn ambiguous operations into engineered systems. I'm an independent engineer who specialises in multi-agent AI for business operations. I've shipped agent systems for SaaS companies, revenue operations teams, and professional services firms — always with the same approach: identify the bottleneck, design the topology, ship the system, hand over something your team can run without me.</p>
+
+      <ul>
+        <li><strong>Architecture before code</strong> — Clear workflows, failure modes, ownership lines drawn first.</li>
+        <li><strong>Measurable outcomes</strong> — Observable outputs, acceptance gates, before/after metrics.</li>
+        <li><strong>Humans stay in control</strong> — Approvals where risk or value demands them, not everywhere.</li>
+        <li><strong>Your team can run it</strong> — Documented, maintainable, no dependency on me to operate.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Delivery protocol</h2>
+      <ol>
+        <li><strong>MAP</strong> — workflow, actors, risk, success metrics</li>
+        <li><strong>DESIGN</strong> — agent topology, state, tool boundaries</li>
+        <li><strong>BUILD</strong> — production code, integrations, interface</li>
+        <li><strong>VERIFY</strong> — evals, observability, failure testing</li>
+        <li><strong>SHIP</strong> — deployed, enabled, documented</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Technical toolkit</h2>
+
+      <h3>LLM & Agent Systems</h3>
+      <p>LangChain, LangGraph, multi-agent orchestration, structured outputs, evals, and RAG. LangGraph, CrewAI, AutoGen, MCP.</p>
+
+      <h3>Python Backend</h3>
+      <p>Typed, testable services for agent runtimes, APIs, and data-heavy operations in production. FastAPI, Django, Pydantic.</p>
+
+      <h3>Vector & Data</h3>
+      <p>Retrieval pipelines tuned for relevance, latency, and governed context windows. Pinecone, Weaviate, Milvus.</p>
+
+      <h3>Cloud & DevOps</h3>
+      <p>Secure, observable infrastructure sized for real production agent workloads. AWS, GCP, Docker.</p>
+
+      <h3>Product Frontend</h3>
+      <p>Fast, clear control surfaces for operators, dashboards, and end-user interfaces. React, Next.js, Tailwind.</p>
+
+      <h3>Integration</h3>
+      <p>Reliable contracts between agents and the tools your operation already runs. REST, GraphQL, Webhooks.</p>
+    </section>
+
+    <section>
+      <h2>Services</h2>
+
+      <h3>Agent System Architecture</h3>
+      <p>Topology design, state machines, tool boundaries, and approval gates for your multi-agent system.</p>
+
+      <h3>Full-Stack Build & Integration</h3>
+      <p>Production agent runtimes, APIs, vector pipelines, operator dashboards, and data connectors.</p>
+
+      <h3>Deployment & Observability</h3>
+      <p>Infrastructure, CI/CD, monitoring, evaluation pipelines, and documentation your team can maintain.</p>
+    </section>
+
+    <section>
+      <h2>Case study: Marketing Automation Pipeline</h2>
+      <p>Four coordinated agents turned a manual lead processing workflow into an automated pipeline — 2,400+ leads/month.</p>
+
+      <h3>Lead Scoring Agent</h3>
+      <p>Evaluates each lead against intent signals, firmographic fit, and engagement history — producing a 0–100 confidence score that prioritizes sales attention.</p>
+
+      <h3>Data Enrichment Agent</h3>
+      <p>For high-confidence leads, retrieves account context — recent funding, tech stack, news — from public APIs and updates the CRM before a rep touches the record.</p>
+
+      <h3>Smart Sequence Agent</h3>
+      <p>Generates personalized outreach sequences per lead profile, selecting channel, timing, and message variant from approved templates — then A/B tests.</p>
+
+      <h3>Outcome Analytics Agent</h3>
+      <p>Attribution agent tracking every step — opens, replies, meetings booked — feeding results back into scoring weights and sequence logic.</p>
+
+      <p>Built on LangGraph for agent orchestration, Pinecone for lead profile retrieval, FastAPI for the service layer, and a React dashboard for operator oversight — with human-in-the-loop approval on outbound messaging.</p>
+    </section>
+
+    <section>
+      <h2>Reference architectures</h2>
+      <ul>
+        <li><strong>Marketing Automation Pipeline</strong> — Scores intent, enriches context, generates governed outreach, measures outcomes.</li>
+        <li><strong>Customer Support Triage</strong> — Classifies urgency, grounds responses in knowledge, escalates low-confidence cases.</li>
+        <li><strong>Cross-Platform Data Sync</strong> — Keeps CRM, ERP, and analytics aligned through event-driven reconciliation agents.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Work with me</h2>
+      <p>I start every engagement with a free architecture session. We map one operation end-to-end, identify where agent coordination creates leverage, and agree on a scope you can act on. No pitch, no pressure.</p>
+      <p><a href="mailto:wylan.man@gmail.com">wylan.man@gmail.com</a></p>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
+  <script>
+    gsap.registerPlugin(ScrollTrigger);
+
+    // --- Lenis ---
+    const lenis = new Lenis({ duration: 1.2, easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)) });
+    lenis.on('scroll', ScrollTrigger.update);
+
+    // --- Minimal Three.js scene ---
+    const canvas = document.getElementById('scene');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x05080f);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 10);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    // --- Particles (800) ---
+    const count = 800;
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const r = Math.cbrt(Math.random()) * 10;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      pos[i * 3 + 2] = r * Math.cos(phi);
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 0.02, color: 0x7286a0,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.4,
+    });
+    const particles = new THREE.Points(geo, mat);
+    scene.add(particles);
+
+    // --- Small icosahedron ---
+    const icoGeo = new THREE.IcosahedronGeometry(0.3, 1);
+    const icoMatBg = new THREE.MeshBasicMaterial({ color: 0x58c4ff, wireframe: true, transparent: true, opacity: 0.2 });
+    const icoBg = new THREE.Mesh(icoGeo, icoMatBg);
+    icoBg.position.set(3, -1.5, -2);
+    scene.add(icoBg);
+
+    // --- GSAP ScrollTrigger section reveals ---
+    document.querySelectorAll('section').forEach((section) => {
+      gsap.fromTo(section, { opacity: 0, y: 40 }, {
+        opacity: 1, y: 0,
+        scrollTrigger: {
+          trigger: section,
+          start: 'top 85%',
+          end: 'top 40%',
+          scrub: 0.5,
+          toggleActions: 'play none none none'
+        }
+      });
+    });
+
+    // --- Resize ---
+    window.addEventListener('resize', () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      ScrollTrigger.refresh();
+    });
+
+    // --- RAF ---
+    function raf(time) {
+      lenis.raf(time);
+      particles.rotation.y += 0.0003;
+      icoBg.rotation.x += 0.005;
+      icoBg.rotation.y += 0.008;
+      renderer.render(scene, camera);
+      requestAnimationFrame(raf);
+    }
+    requestAnimationFrame(raf);
+
+    gsap.ticker.add((time) => lenis.raf(time * 1000));
+    gsap.ticker.lagSmoothing(0);
+    ScrollTrigger.refresh();
+  </script>
+</body>
+</html>
