@@ -8,7 +8,6 @@ node_modules/
 .vercel
 .env*
 .playwright-mcp/
-three.min.js
 data/*
 !data/robota_scan.json
 logs/
