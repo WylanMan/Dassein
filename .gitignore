@@ -9,7 +9,8 @@ node_modules/
 .env*
 .playwright-mcp/
 three.min.js
-data/
+data/*
+!data/robota_scan.json
 logs/
 test-results/
 landing-state.png
