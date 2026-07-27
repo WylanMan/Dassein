@@ -6,263 +6,1381 @@
   <title>Dassein</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=Caveat:wght@400;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=Caveat:wght@400;600&family=Space+Grotesk:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-
     body {
       background: #05080f;
       overflow: hidden;
-      font-family: "Playfair Display", serif;
+      font-family: "Space Grotesk", system-ui, sans-serif;
       cursor: default;
+      min-height: 100vh;
     }
-
-    #scene {
-      position: fixed; inset: 0;
-      width: 100vw; height: 100vh;
-      display: block;
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: -1;
+      background: radial-gradient(1200px 800px at 50% 32%, #0c0c14, #06060a);
     }
-
+    #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; z-index: 0; }
     #overlay {
       position: fixed; inset: 0; z-index: 1;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
       pointer-events: none;
+      transition: opacity 0.5s ease;
     }
-
     #overlay h1 {
-      color: #d7e1ee;
-      font-family: "Playfair Display", serif;
-      font-size: clamp(56px, 10vw, 120px);
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      opacity: 0.85;
+      color: #b9b6c2; font-family: "Playfair Display", serif;
+      font-size: clamp(56px, 10vw, 120px); font-weight: 700;
+      letter-spacing: -0.03em; opacity: 0.85;
     }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
 
-    #overlay p {
-      color: #7286a0;
-      font-family: "Caveat", cursive;
-      font-size: 22px;
-      margin-top: 12px;
-      opacity: 0.6;
-    }
-
-    #tooltip {
-      position: fixed; z-index: 2;
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      padding: 20px 10vw;
+      background: rgba(5, 8, 15, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      opacity: 0; transition: opacity 0.6s ease;
       pointer-events: none;
-      color: #d7e1ee;
-      font-family: "Caveat", cursive;
-      font-size: 16px;
-      opacity: 0;
-      transition: opacity 0.25s;
-      transform: translate(-50%, -50%);
-      text-shadow: 0 0 12px rgba(61, 255, 184, 0.4);
+    }
+    nav.visible { opacity: 1; pointer-events: all; }
+    nav ul { list-style: none; display: flex; gap: 28px; align-items: center; font-family: "Caveat", cursive; font-size: 18px; }
+    nav li:first-child { color: #b9b6c2; }
+    nav a { color: #9a97a3; text-decoration: none; transition: color 0.3s; }
+    nav a.active, nav span.active { color: #00d4ff; cursor: default; }
+
+    #agent-ui {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 0 32px 40px; gap: 14px;
+      opacity: 0; transition: opacity 0.6s ease;
+      pointer-events: none;
+    }
+    #agent-ui.visible { opacity: 1; pointer-events: all; }
+
+    .stage {
+      width: min(78vmin, 600px); aspect-ratio: 1;
+      border-radius: 50%; overflow: hidden; position: relative;
+      box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.10), 0 0 60px -10px rgba(0, 212, 255, 0.08), 0 20px 60px -15px rgba(0, 0, 0, 0.8);
+    }
+    .stage canvas { display: block; width: 100%; height: 100%; }
+    .stage::after {
+      content: ''; position: absolute; inset: 0; z-index: 1;
+      border-radius: 50%;
+      background-image: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 212, 255, 0.015) 2px, rgba(0, 212, 255, 0.015) 4px),
+                        repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(0, 212, 255, 0.015) 2px, rgba(0, 212, 255, 0.015) 4px);
+      pointer-events: none;
     }
 
-    #tooltip.visible { opacity: 1; }
+    .caption {
+      display: flex; gap: 9px; align-items: center;
+      font-size: 14px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: #9a97a3; font-family: "Caveat", cursive;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #00d4ff; box-shadow: 0 0 12px #00d4ff; animation: pulse 2.4s infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+
+    .convo {
+      min-height: 20px; max-width: 480px; text-align: center;
+      font-size: 14px; color: #9a97a3; line-height: 1.5;
+    }
+
+    .bar { display: flex; gap: 10px; align-items: center; }
+    .bar input[type=text] {
+      background: #111118; color: #b9b6c2;
+      border: 1px solid rgba(0, 212, 255, 0.12);
+      padding: 10px 16px; border-radius: 999px;
+      font: inherit; font-size: 14px;
+      width: min(46vw, 320px); outline: none;
+      transition: border-color 0.25s;
+    }
+    .bar input[type=text]:focus { border-color: rgba(0, 212, 255, 0.35); }
+    button {
+      background: #15151d; color: #aab4c0;
+      border: 1px solid rgba(0, 212, 255, 0.12);
+      padding: 9px 18px; border-radius: 999px;
+      font: inherit; font-size: 13px; cursor: pointer;
+      transition: all 0.25s;
+    }
+    button:hover { background: #1c1c28; border-color: rgba(0, 212, 255, 0.35); color: #b9b6c2; }
+    #micBtn.live { background: #201518; border-color: #ff4466; color: #ffb3ba; }
+    #micBtn.cont-active { background: #142218; border-color: #44ff88; color: #b3ffba; }
   </style>
 </head>
 <body>
-
   <canvas id="scene"></canvas>
 
   <div id="overlay">
     <h1>Dassein</h1>
-    <p>a clearing</p>
   </div>
 
-  <div id="tooltip"></div>
+  <nav>
+    <ul>
+      <li>Dassein</li>
+      <li><a href="#" id="navHome">home</a></li>
+      <li><span id="navAgent" class="active">agent</span></li>
+      <li><a href="/blogs" id="navBlogs">blogs</a></li>
+    </ul>
+  </nav>
 
-  <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
-  <script>
-    const canvas = document.getElementById('scene');
+  <div id="agent-ui">
+    <div class="stage" id="stage">
+      <canvas id="c"></canvas>
+    </div>
+    <div class="caption">
+      <span class="dot"></span>
+      <span>the questioner</span>
+    </div>
+    <div class="convo" id="convo">
+      Ask anything. I answer in Wylan's words.
+    </div>
+    <div class="bar">
+      <input id="chatInput" type="text" placeholder="Ask me something..." autocomplete="off"/>
+      <button id="sendBtn">&rarr;</button>
+      <button id="micBtn">mic</button>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    const NUM = 478;
+    const FACE_SCALE = 2.8;
+    const FACE_SCALE_Y = FACE_SCALE * 0.75;
+    const FACE_SCALE_Z = 2.0;
+
+    const CONTOURS = {
+      faceOval: [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109],
+      leftEye: [33,246,161,160,159,158,157,173,133,155,154,153,145,144,163,7],
+      rightEye: [362,398,384,385,386,387,388,466,263,249,390,373,374,380,381,382],
+      lipsOuter: [61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,37,39,40,185],
+      lipsInner: [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95],
+      leftBrow: [70,63,105,66,107,55,65,52,53,46],
+      rightBrow: [300,293,334,296,336,285,295,282,283,276],
+      noseBridge: [168,6,197,195,5,4,1],
+      noseBottom: [1,2,98,327,1],
+    };
+
+    const KEY_NODE_INDICES = [1, 4, 6, 10, 33, 61, 63, 105, 133, 152, 159, 168, 263, 267, 291, 314, 362, 386, 397, 405, 454, 468, 473];
+    const UPPER_LIDS = [159, 160, 161, 163, 386, 387, 385, 384];
+    const LOWER_LIDS = [145, 144, 157, 374, 373, 390];
+    const MOUTH_INNER = [13, 14, 78, 80, 81, 82, 87, 88, 95, 178, 191, 308, 310, 311, 312, 317, 318, 324, 402, 415];
+    const MOUTH_OUTER = [0, 17, 37, 39, 40, 61, 91, 146, 181, 185, 267, 269, 270, 291, 314, 321, 375, 405, 409];
+
+    let scanData = null;
+    let faceLMs = null;
+    let baseLMs = null;
+    let workingBuffer = null;
+    let state = 'landing';
+
+    // --- Wave 1: Deformation weights (precomputed) ---
+    let jawWeights = null;
+    let jawCurveWeight = null;
+    let noseBaseWeight = null;
+    let cheekWeight = null;
+
+    function computeJawWeights(lms) {
+      const hingeA = lms[234], hingeB = lms[454];
+      const chin = lms[152];
+      const dx = hingeB.x - hingeA.x, dy = hingeB.y - hingeA.y, dz = hingeB.z - hingeA.z;
+      const len2 = dx*dx + dy*dy + dz*dz;
+      const maxDist = Math.sqrt(
+        (() => { const c = chin; const t = ((c.x-hingeA.x)*dx + (c.y-hingeA.y)*dy + (c.z-hingeA.z)*dz) / len2; const px = hingeA.x + t*dx, py = hingeA.y + t*dy, pz = hingeA.z + t*dz; return (c.x-px)**2 + (c.y-py)**2 + (c.z-pz)**2; })()
+      );
+      const jw = new Float32Array(NUM);
+      const jcw = new Float32Array(NUM);
+      const nbw = new Float32Array(NUM);
+      const cw = new Float32Array(NUM);
+      const upperLipY = lms[13].y;
+      const noseBaseSet = new Set([1,2,98,327]);
+      const cheekSet = new Set([36,93,132,137,205,206,216,227,234,331,366,371,425,427,430,436,450,454,458]);
+      const jawCurveIndices = [0,17,37,39,40,61,91,146,181,185,267,269,270,291,314,321,375,405,409];
+      for (let i = 0; i < NUM; i++) {
+        const p = lms[i];
+        if (p.y > upperLipY) { jw[i] = 0; continue; }
+        const t = ((p.x-hingeA.x)*dx + (p.y-hingeA.y)*dy + (p.z-hingeA.z)*dz) / len2;
+        const px = hingeA.x + t*dx, py = hingeA.y + t*dy, pz = hingeA.z + t*dz;
+        const d = Math.sqrt((p.x-px)**2 + (p.y-py)**2 + (p.z-pz)**2);
+        const r = d / maxDist;
+        jw[i] = Math.max(0, 1 - Math.cos(r * Math.PI) / 2 - 0.5);
+        jcw[i] = jawCurveIndices.includes(i) ? jw[i] : 0;
+        nbw[i] = noseBaseSet.has(i) ? 1 : 0;
+        cw[i] = cheekSet.has(i) ? jw[i] * 0.5 : 0;
+      }
+      jawWeights = jw; jawCurveWeight = jcw; noseBaseWeight = nbw; cheekWeight = cw;
+    }
+
+    function normalizeVisemes(profile) {
+      if (!profile || !profile.visemes) return;
+      for (const key of ['A','E','O','U','F']) {
+        const v = profile.visemes[key];
+        if (v) v.jawOpen = Math.min(v.jawOpen, v.neutral?.jawOpen + 0.40 || 0.40);
+      }
+      if (profile.visemes.I) profile.visemes.I.jawOpen = profile.neutral.blendshapes?.jawOpen || 0;
+      if (profile.visemes.M) profile.visemes.M.jawOpen = Math.min(profile.visemes.M.jawOpen, (profile.neutral.blendshapes?.jawOpen || 0) + 0.05);
+    }
 
     // --- Scene ---
+    const canvas = document.getElementById('scene');
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x05080f);
-    scene.fog = new THREE.FogExp2(0x05080f, 0.00015);
+    scene.background = new THREE.Color(0x06060a);
 
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 0, 8);
+    camera.position.set(0, 0.1, 6);
+    camera.lookAt(0, 0, 0);
 
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
 
-    // --- Lights ---
-    const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
-    scene.add(ambientLight);
+    // --- IBL ---
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envTex = pmrem.fromScene(new RoomEnvironment()).texture;
+    scene.environment = envTex;
 
-    const pointLight = new THREE.PointLight(0x3dffb8, 8, 20);
-    pointLight.position.set(0, 0, 2);
-    scene.add(pointLight);
+    // --- Three-point lighting ---
+    scene.add(new THREE.AmbientLight(0x1a1a2e, 0.6));
+    const keyLight = new THREE.DirectionalLight(0xc8e8ff, 1.2);
+    keyLight.position.set(1, 2, 3);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0x334466, 0.5);
+    fillLight.position.set(-2, 0.5, 1);
+    scene.add(fillLight);
 
-    // --- Particles ---
-    const PARTICLE_COUNT = 2000;
-    const particleGeo = new THREE.BufferGeometry();
-    const positions = new Float32Array(PARTICLE_COUNT * 3);
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const r = Math.cbrt(Math.random()) * 12;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
+    // --- Fibonacci sphere ---
+    function fibonacciSphere(n) {
+      const pts = []; const phi = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < n; i++) {
+        const y = 1 - (i / (n - 1)) * 2;
+        const r = Math.sqrt(1 - y * y);
+        const theta = phi * i;
+        pts.push({ x: Math.cos(theta) * r, y, z: Math.sin(theta) * r });
+      }
+      return pts;
     }
-    particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const icoPoints = fibonacciSphere(NUM);
 
-    const particleMat = new THREE.PointsMaterial({
-      size: 0.015,
-      color: 0x7286a0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      transparent: true,
-      opacity: 0.6,
+    const positions = new Float32Array(NUM * 3);
+    for (let i = 0; i < NUM; i++) {
+      positions[i * 3] = icoPoints[i].x;
+      positions[i * 3 + 1] = icoPoints[i].y;
+      positions[i * 3 + 2] = icoPoints[i].z;
+    }
+    const icoGeo = new THREE.BufferGeometry();
+    icoGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    // Point cloud
+    const icoDotMat = new THREE.PointsMaterial({
+      size: 0.045, color: 0x00d4ff,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8,
     });
-    const particles = new THREE.Points(particleGeo, particleMat);
-    scene.add(particles);
+    const icoCloud = new THREE.Points(icoGeo, icoDotMat);
 
-    // --- Torus Knot (central mark) ---
-    const knotGeo = new THREE.TorusKnotGeometry(0.7, 0.15, 200, 32);
-    const knotMat = new THREE.MeshStandardMaterial({
-      color: 0x3dffb8,
-      roughness: 0.3,
-      metalness: 0.1,
-      emissive: 0x3dffb8,
-      emissiveIntensity: 0.15,
+    // Neighbor wireframe
+    function nearestNeighborEdges(lms, k) {
+      const edges = []; const used = new Set();
+      for (let i = 0; i < lms.length; i++) {
+        const ds = [];
+        for (let j = 0; j < lms.length; j++) {
+          if (i === j) continue;
+          const dx = lms[i].x - lms[j].x, dy = lms[i].y - lms[j].y, dz = lms[i].z - lms[j].z;
+          ds.push({ idx: j, d: dx * dx + dy * dy + dz * dz });
+        }
+        ds.sort((a, b) => a.d - b.d);
+        for (let kk = 0; kk < Math.min(k, ds.length); kk++) {
+          const key = Math.min(i, ds[kk].idx) + '-' + Math.max(i, ds[kk].idx);
+          if (!used.has(key)) { used.add(key); edges.push([i, ds[kk].idx]); }
+        }
+      }
+      return edges;
+    }
+    const nnEdges = nearestNeighborEdges(icoPoints, 6);
+    const nnIndices = [];
+    for (const [a, b] of nnEdges) nnIndices.push(a, b);
+
+    const icoGroup = new THREE.Group();
+
+    // Edge wireframe — shares icoGeo's position buffer so morph drives both
+    const icoEdgeGeo = new THREE.BufferGeometry();
+    icoEdgeGeo.setAttribute('position', icoGeo.attributes.position);
+    icoEdgeGeo.setIndex(nnIndices);
+    icoEdgeGeo.setDrawRange(0, nnIndices.length);
+    const icoEdgeMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.25 });
+    const icoEdges = new THREE.LineSegments(icoEdgeGeo, icoEdgeMat);
+    icoGroup.add(icoEdges);
+
+    const icoEdgeGlowMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.08, depthTest: false, depthWrite: false });
+    const icoEdgeGlow = new THREE.LineSegments(icoEdgeGeo.clone(), icoEdgeGlowMat);
+    icoGroup.add(icoEdgeGlow);
+
+    icoGroup.add(icoCloud);
+    scene.add(icoGroup);
+
+    // --- Face wireframe (pre-built, opacity 0) ---
+    function contourEdges(contours) {
+      const e = [];
+      for (const c of Object.values(contours)) {
+        for (let i = 0; i < c.length - 1; i++) e.push([c[i], c[i + 1]]);
+        if (c.length > 2) e.push([c[c.length - 1], c[0]]);
+      }
+      return e;
+    }
+
+    let faceContourLines = null;
+    let faceContourGlow = null;
+    let faceNeighborLines = null;
+    let faceMouthCavity = null;
+    let faceKeyNodes = [];
+    let faceIrisNodes = [];
+
+    function buildFace(lms) {
+      const fp = new Float32Array(NUM * 3);
+      for (let i = 0; i < NUM; i++) {
+        fp[i * 3] = lms[i].x; fp[i * 3 + 1] = lms[i].y; fp[i * 3 + 2] = lms[i].z;
+      }
+      const fGeo = new THREE.BufferGeometry();
+      fGeo.setAttribute('position', new THREE.BufferAttribute(fp, 3));
+
+      const edgeList = contourEdges(CONTOURS);
+      const idx = [];
+      for (const [a, b] of edgeList) idx.push(a, b);
+      fGeo.setIndex(idx);
+      fGeo.setDrawRange(0, idx.length);
+
+      const cMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0, depthTest: false });
+      faceContourLines = new THREE.LineSegments(fGeo, cMat);
+      faceContourLines.renderOrder = 1;
+      icoGroup.add(faceContourLines);
+
+      const gMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
+      faceContourGlow = new THREE.LineSegments(fGeo.clone(), gMat);
+      icoGroup.add(faceContourGlow);
+
+      const nn = nearestNeighborEdges(lms, 5);
+      const ni = [];
+      for (const [a, b] of nn) ni.push(a, b);
+      const nGeo = new THREE.BufferGeometry();
+      const nPos = new Float32Array(NUM * 3);
+      nPos.set(fp);
+      nGeo.setAttribute('position', new THREE.BufferAttribute(nPos, 3));
+      nGeo.setIndex(ni);
+      nGeo.setDrawRange(0, ni.length);
+      const nMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0, depthTest: false });
+      faceNeighborLines = new THREE.LineSegments(nGeo, nMat);
+      icoGroup.add(faceNeighborLines);
+
+      // Mouth cavity
+      const cavityTris = []; const mIdx = [...MOUTH_INNER, ...MOUTH_OUTER];
+      for (let i = 0; i < mIdx.length; i++) {
+        for (let j = i + 1; j < mIdx.length; j++) {
+          for (let k = j + 1; k < mIdx.length; k++) {
+            cavityTris.push(mIdx[i], mIdx[j], mIdx[k]);
+          }
+        }
+      }
+      const cGeo = new THREE.BufferGeometry();
+      const cPos = new Float32Array(NUM * 3);
+      cPos.set(fp);
+      cGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3));
+      cGeo.setIndex(cavityTris.slice(0, 3000));
+      cGeo.computeVertexNormals();
+      const cMatMouth = new THREE.MeshBasicMaterial({ color: 0x000a1a, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+      faceMouthCavity = new THREE.Mesh(cGeo, cMatMouth);
+      faceMouthCavity.renderOrder = 0;
+      icoGroup.add(faceMouthCavity);
+
+      // Key nodes (subtle landmark markers)
+      const knGeo = new THREE.SphereGeometry(0.008, 6, 6);
+      const knMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0 });
+      for (const idx of KEY_NODE_INDICES) {
+        if (idx >= NUM) continue;
+        const dot = new THREE.Mesh(knGeo, knMat);
+        dot.position.set(lms[idx].x, lms[idx].y, lms[idx].z);
+        dot.userData.idx = idx;
+        icoGroup.add(dot);
+        faceKeyNodes.push(dot);
+      }
+
+      // Iris nodes
+      const irGeo = new THREE.SphereGeometry(0.028, 12, 12);
+      const irMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0 });
+      for (const idx of [468, 473]) {
+        if (idx >= NUM) continue;
+        const dot = new THREE.Mesh(irGeo, irMat);
+        dot.position.set(lms[idx].x, lms[idx].y, lms[idx].z);
+        dot.userData.idx = idx;
+        icoGroup.add(dot);
+        faceIrisNodes.push(dot);
+
+        const glowGeo = new THREE.SphereGeometry(0.045, 12, 12);
+        const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
+        const glow = new THREE.Mesh(glowGeo, glowMat);
+        glow.position.copy(dot.position);
+        glow.userData.idx = idx;
+        icoGroup.add(glow);
+        faceIrisNodes.push(glow);
+      }
+
+      return fp;
+    }
+
+    const facePositions = new Float32Array(NUM * 3);
+
+    function updateFaceGeometry(src) {
+      if (faceContourLines) {
+        const a = faceContourLines.geometry.attributes.position.array;
+        for (let i = 0; i < NUM * 3; i++) a[i] = src[i];
+        faceContourLines.geometry.attributes.position.needsUpdate = true;
+      }
+      if (faceContourGlow) {
+        const a = faceContourGlow.geometry.attributes.position.array;
+        for (let i = 0; i < NUM * 3; i++) a[i] = src[i];
+        faceContourGlow.geometry.attributes.position.needsUpdate = true;
+      }
+      if (faceNeighborLines) {
+        const a = faceNeighborLines.geometry.attributes.position.array;
+        for (let i = 0; i < NUM * 3; i++) a[i] = src[i];
+        faceNeighborLines.geometry.attributes.position.needsUpdate = true;
+      }
+      if (faceMouthCavity) {
+        const a = faceMouthCavity.geometry.attributes.position.array;
+        const innerLip = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+        const n = innerLip.length;
+        for (let i = 0; i < n; i++) {
+          const idx = innerLip[i];
+          a[(i+1)*3]     = src[idx*3];
+          a[(i+1)*3 + 1] = src[idx*3 + 1];
+          a[(i+1)*3 + 2] = src[idx*3 + 2];
+        }
+        let cx = 0, cy = 0, cz = 0;
+        for (let i = 0; i < n; i++) { cx += a[(i+1)*3]; cy += a[(i+1)*3 + 1]; cz += a[(i+1)*3 + 2]; }
+        a[0] = cx/n; a[1] = cy/n; a[2] = cz/n;
+        faceMouthCavity.geometry.attributes.position.needsUpdate = true;
+        faceMouthCavity.geometry.computeVertexNormals();
+      }
+      for (const dot of [...faceKeyNodes, ...faceIrisNodes]) {
+        const idx = dot.userData.idx;
+        if (idx !== undefined && idx < NUM) {
+          dot.position.set(src[idx * 3], src[idx * 3 + 1], src[idx * 3 + 2]);
+        }
+      }
+    }
+
+    // --- Viseme data structures ---
+    const VOWEL_VISEMES = { a: 'A', e: 'E', i: 'I', o: 'O', u: 'U' };
+    const CONSONANT_VISEMES = {
+      b:'M', p:'M', m:'M', f:'F', v:'F', w:'U',
+      t:'E', d:'E', s:'E', z:'E', n:'E', l:'E', r:'E', th:'E', dh:'E',
+      k:'A', g:'A', ng:'A', h:'A', y:'I', ch:'I', sh:'I', zh:'I', j:'I',
+    };
+    const FUNCTION_WORDS = new Set(['the','a','an','in','on','at','to','for','of','and','or','but',
+      'is','are','was','were','be','been','have','has','had','do','does','did',
+      'will','would','can','could','shall','should','may','might','not','no',
+      'it','its','this','that','these','those','i','you','he','she','we','they',
+      'my','your','his','her','our','their','me','him','us','them']);
+    const VOWEL_SET = new Set(['a','e','i','o','u']);
+
+    // --- Load scan ---
+    async function loadScan() {
+      const r = await fetch('/data/robota_scan.json');
+      scanData = await r.json();
+      const lm = scanData.neutral.landmarksNormalized || scanData.neutral.landmarks;
+      faceLMs = lm.map(p => ({
+        x: p.x * FACE_SCALE, y: -p.y * FACE_SCALE_Y, z: (p.z || 0) * FACE_SCALE_Z,
+      }));
+      baseLMs = faceLMs.map(p => ({ ...p }));
+      workingBuffer = faceLMs.map(p => ({ ...p }));
+
+      // Build face wireframe
+      const fp = buildFace(faceLMs);
+      facePositions.set(fp);
+
+      // Expose
+      computeJawWeights(faceLMs);
+      normalizeVisemes(scanData);
+
+      window.__scene = {
+        state, icoGeo, icoCloud, icoDotMat, icoGroup, icoEdges, icoEdgeMat,
+        faceContourLines, faceContourGlow, faceNeighborLines, faceMouthCavity,
+        faceKeyNodes, faceIrisNodes,
+        faceLMs, baseLMs, workingBuffer, triggerTransform, resetToLanding, scene, camera, renderer,
+        icoPoints, positions, NUM, isAnimating: false,
+        faceLandmarks3D: faceLMs, seedPositionsArr: positions,
+        jawWeights, jawCurveWeight, noseBaseWeight, cheekWeight,
+        scanData, behavior: null,
+      };
+    }
+
+    await loadScan();
+
+    // --- Hit sphere ---
+    const hitGeo = new THREE.SphereGeometry(1.0, 16, 16);
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    const hitSphere = new THREE.Mesh(hitGeo, hitMat);
+    scene.add(hitSphere);
+
+    // --- Transform ---
+    function easeInOutCubic(t) {
+      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    let isAnimating = false;
+
+    function triggerTransform() {
+      if (state !== 'landing' || isAnimating) return;
+      isAnimating = true;
+      state = 'transforming';
+      if (window.__scene) window.__scene.state = state;
+
+      gsap.to('#overlay', { opacity: 0, duration: 0.5 });
+
+
+      // Reset accumulated landing rotation so face aligns with world
+      icoGroup.rotation.set(0, 0, 0);
+
+      const targets = faceLMs;
+      const morphObj = { progress: 0 };
+      gsap.to(morphObj, {
+        progress: 1, duration: 2.0, ease: 'power2.inOut',
+        onUpdate: () => {
+          const t = easeInOutCubic(morphObj.progress);
+          for (let i = 0; i < NUM; i++) {
+            const sx = icoPoints[i].x, sy = icoPoints[i].y, sz = icoPoints[i].z;
+            const fx = targets[i].x, fy = targets[i].y, fz = targets[i].z;
+            positions[i * 3] = sx + (fx - sx) * t;
+            positions[i * 3 + 1] = sy + (fy - sy) * t;
+            positions[i * 3 + 2] = sz + (fz - sz) * t;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+
+          // Crossfade: sphere edges dissolve as face wireframe emerges
+          icoEdgeMat.opacity = 0.25 * (1 - t);
+          icoEdgeGlowMat.opacity = 0.08 * (1 - t);
+          faceContourLines.material.opacity = 0.75 * t;
+          faceContourGlow.material.opacity = 0.18 * t;
+          faceNeighborLines.material.opacity = 0.45 * t;
+          faceMouthCavity.material.opacity = 0.55 * t;
+          faceKeyNodes.forEach(n => { n.material.opacity = 0.25 * t; });
+          faceIrisNodes.forEach(n => {
+            n.material.opacity = (n.geometry.parameters?.radius > 0.03 ? 0.15 : 1) * t;
+          });
+        },
+        onComplete: () => {
+          for (let i = 0; i < NUM; i++) {
+            positions[i * 3] = targets[i].x;
+            positions[i * 3 + 1] = targets[i].y;
+            positions[i * 3 + 2] = targets[i].z;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+        }
+      });
+
+      gsap.to(icoDotMat, { size: 0.02, duration: 0.3 });
+
+      gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
+      gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => document.getElementById('agent-ui').classList.add('visible') });
+      gsap.to('nav', { opacity: 1, duration: 0.6, delay: 2.0, onStart: () => document.querySelector('nav').classList.add('visible') });
+
+      gsap.to({}, { delay: 2.5, onComplete: () => { state = 'agent'; isAnimating = false; if (window.__scene) window.__scene.state = state; startBehavior(); } });
+    }
+
+    // --- Reset to landing ---
+    function resetToLanding() {
+      if (state === 'landing' || isAnimating) return;
+      isAnimating = true;
+      state = 'resetting';
+      if (window.__scene) window.__scene.state = state;
+
+      // Kill any active GSAP tweens on these objects
+      gsap.killTweensOf('#overlay');
+      gsap.killTweensOf('#agent-ui');
+      gsap.killTweensOf('nav');
+      gsap.killTweensOf(icoDotMat);
+      gsap.killTweensOf(camera.position);
+      gsap.killTweensOf(icoEdgeMat);
+      gsap.killTweensOf(faceContourLines.material);
+      gsap.killTweensOf(faceContourGlow.material);
+      gsap.killTweensOf(faceNeighborLines.material);
+      gsap.killTweensOf(faceMouthCavity.material);
+      faceKeyNodes.forEach(n => gsap.killTweensOf(n.material));
+
+      faceIrisNodes.forEach(n => gsap.killTweensOf(n.material));
+
+      const startPos = new Float32Array(positions);
+
+      const morphObj = { progress: 0 };
+      gsap.to(morphObj, {
+        progress: 1, duration: 1.5, ease: 'power2.inOut',
+        onUpdate: () => {
+          const t = easeInOutCubic(morphObj.progress);
+          for (let i = 0; i < NUM; i++) {
+            const sx = startPos[i * 3], sy = startPos[i * 3 + 1], sz = startPos[i * 3 + 2];
+            const fx = icoPoints[i].x, fy = icoPoints[i].y, fz = icoPoints[i].z;
+            positions[i * 3]     = sx + (fx - sx) * t;
+            positions[i * 3 + 1] = sy + (fy - sy) * t;
+            positions[i * 3 + 2] = sz + (fz - sz) * t;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+
+          // Reverse crossfade: face wireframe dissolves as sphere edges return
+          icoEdgeMat.opacity = 0.25 * t;
+          icoEdgeGlowMat.opacity = 0.08 * t;
+          faceContourLines.material.opacity = 0.75 * (1 - t);
+          faceContourGlow.material.opacity = 0.18 * (1 - t);
+          faceNeighborLines.material.opacity = 0.45 * (1 - t);
+          faceMouthCavity.material.opacity = 0.55 * (1 - t);
+          faceKeyNodes.forEach(n => { n.material.opacity = 0.25 * (1 - t); });
+          faceIrisNodes.forEach(n => {
+            n.material.opacity = (n.geometry.parameters?.radius > 0.03 ? 0.15 : 1) * (1 - t);
+          });
+        },
+        onComplete: () => {
+          for (let i = 0; i < NUM; i++) {
+            positions[i * 3]     = icoPoints[i].x;
+            positions[i * 3 + 1] = icoPoints[i].y;
+            positions[i * 3 + 2] = icoPoints[i].z;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+        }
+      });
+
+      // Enlarge dots back
+      gsap.to(icoDotMat, { size: 0.045, duration: 0.3 });
+
+      // Restore camera
+      gsap.to(camera.position, { z: 6, duration: 1.2, ease: 'power2.inOut' });
+
+      // Restore overlay
+      gsap.to('#overlay', { opacity: 1, duration: 0.4, delay: 0.3 });
+
+      // Hide agent UI and nav
+      gsap.to('#agent-ui', { opacity: 0, duration: 0.3, onComplete: () => document.getElementById('agent-ui').classList.remove('visible') });
+      gsap.to('nav', { opacity: 0, duration: 0.3, onComplete: () => document.querySelector('nav').classList.remove('visible') });
+
+      // Reset nav active states
+      document.getElementById('navHome').classList.add('active');
+      document.getElementById('navAgent').classList.remove('active');
+
+      gsap.to({}, {
+        delay: 1.8,
+        onComplete: () => {
+          state = 'landing'; isAnimating = false;
+          if (window.__scene) window.__scene.state = state;
+        }
+      });
+    }
+
+    // --- Nav handlers ---
+    document.getElementById('navHome').addEventListener('click', (e) => {
+      e.preventDefault();
+      resetToLanding();
     });
-    const knot = new THREE.Mesh(knotGeo, knotMat);
-    knot.position.set(0, 0.2, 0);
-    scene.add(knot);
 
-    // --- Orbit Group (contains nav shapes) ---
-    const orbitGroup = new THREE.Group();
-    scene.add(orbitGroup);
-
-    // --- Icosahedron (Wylan link) ---
-    const icoGeo = new THREE.IcosahedronGeometry(0.35, 1);
-    const icoMat = new THREE.MeshStandardMaterial({
-      color: 0x58c4ff,
-      wireframe: true,
-      emissive: 0x58c4ff,
-      emissiveIntensity: 0.1,
+    document.getElementById('navBlogs').addEventListener('click', (e) => {
+      if (state === 'landing') return;
+      e.preventDefault();
+      window.location.href = '/blogs';
     });
-    const icosahedron = new THREE.Mesh(icoGeo, icoMat);
-    icosahedron.position.set(2.2, 0.3, 0);
-    orbitGroup.add(icosahedron);
 
-    // --- Ribbon tube (Blogs link) ---
-    const ribbonStart = new THREE.Vector3(0, 0, 0);
-    const ribbonC1 = new THREE.Vector3(-1.2, 1.2, -0.8);
-    const ribbonC2 = new THREE.Vector3(-2.5, 0.3, 0.5);
-    const ribbonEnd = new THREE.Vector3(-2.0, -0.2, 1.2);
-    const ribbonCurve = new THREE.CubicBezierCurve3(ribbonStart, ribbonC1, ribbonC2, ribbonEnd);
-    const ribbonGeo = new THREE.TubeGeometry(ribbonCurve, 48, 0.03, 8, false);
-    const ribbonMat = new THREE.MeshStandardMaterial({
-      color: 0xb79cff,
-      emissive: 0xb79cff,
-      emissiveIntensity: 0.1,
+    // --- Keyboard ---
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') resetToLanding();
     });
-    const ribbonMesh = new THREE.Mesh(ribbonGeo, ribbonMat);
-    orbitGroup.add(ribbonMesh);
+
+    // --- FPS monitor + render loop ---
+    const fpsEl = document.createElement('div');
+    fpsEl.id = 'fps';
+    fpsEl.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:99;color:rgba(0,212,255,0.3);font:12px monospace;pointer-events:none;';
+    document.body.appendChild(fpsEl);
+    let fpsFrames = 0, fpsTime = 0;
+    let lastRAFTime = 0;
+
+    function animate(time) {
+      requestAnimationFrame(animate);
+      fpsFrames++;
+      if (time - fpsTime >= 1000) {
+        fpsEl.textContent = fpsFrames + ' FPS';
+        fpsFrames = 0; fpsTime = time;
+      }
+      const dt = Math.min((time - lastRAFTime) / 1000 || 0.016, 0.05);
+      lastRAFTime = time;
+
+      // --- Landing rotation ---
+      if (state === 'landing') {
+        icoGroup.rotation.x += 0.003;
+        icoGroup.rotation.y += 0.005;
+        icoGroup.rotation.z += 0.001;
+      }
+
+      // --- Agent mode animation ---
+      if (state === 'agent' && window.__scene?.behavior && workingBuffer && baseLMs) {
+        const b = window.__scene.behavior.update(dt);
+        const t = time / 1000;
+
+        // Reset to base
+        for (let i = 0; i < NUM; i++) {
+          workingBuffer[i].x = baseLMs[i].x;
+          workingBuffer[i].y = baseLMs[i].y;
+          workingBuffer[i].z = baseLMs[i].z;
+        }
+
+        // Priority: VisemeEngine > EmotionState > idle behavior
+        if (VisemeEngine.talking) {
+          VisemeEngine.update(dt);
+        } else if (EmotionState.target !== 'neutral' && EmotionState.blend < 1) {
+          EmotionState.update(dt);
+        } else {
+          // Idle: blink + mouth micro-movements
+          if (b.blink > 0.01) {
+            for (const idx of UPPER_LIDS) if (workingBuffer[idx]) workingBuffer[idx].y -= b.blink * 0.08;
+            for (const idx of LOWER_LIDS) if (workingBuffer[idx]) workingBuffer[idx].y += b.blink * 0.08 * 0.3;
+          }
+          if (b.mouth > 0.01) {
+            for (const idx of MOUTH_INNER) if (workingBuffer[idx]) workingBuffer[idx].y -= b.mouth * 0.1;
+            for (const idx of MOUTH_OUTER) if (workingBuffer[idx]) workingBuffer[idx].y -= b.mouth * 0.03;
+          }
+        }
+
+        // Apply blink overlay on top of viseme/emotion
+        if (b.blink > 0.01 && (VisemeEngine.talking || EmotionState.target !== 'neutral')) {
+          for (const idx of UPPER_LIDS) if (workingBuffer[idx]) workingBuffer[idx].y -= b.blink * 0.08;
+          for (const idx of LOWER_LIDS) if (workingBuffer[idx]) workingBuffer[idx].y += b.blink * 0.08 * 0.3;
+        }
+
+        // Iris position updates (F12)
+        const iris = computeIrisPositions(b.gazeX, b.gazeY);
+        if (workingBuffer[468]) { workingBuffer[468].x = iris.left.x; workingBuffer[468].y = iris.left.y; workingBuffer[468].z = iris.left.z; }
+        if (workingBuffer[473]) { workingBuffer[473].x = iris.right.x; workingBuffer[473].y = iris.right.y; workingBuffer[473].z = iris.right.z; }
+
+        const buf = new Float32Array(NUM * 3);
+        for (let i = 0; i < NUM; i++) {
+          buf[i * 3] = workingBuffer[i].x;
+          buf[i * 3 + 1] = workingBuffer[i].y;
+          buf[i * 3 + 2] = workingBuffer[i].z;
+        }
+        icoGeo.attributes.position.needsUpdate = true;
+        icoEdgeGeo.attributes.position.needsUpdate = true;
+        updateFaceGeometry(buf);
+
+        // --- Contour glow pulse (F5) ---
+        if (faceContourGlow) {
+          faceContourGlow.material.opacity = 0.18 + Math.sin(t * 2.5) * 0.04;
+        }
+
+        // --- Head group animation (F11/F15) ---
+        const headMotion = HeadMotion.update(dt);
+        if (headMotion && icoGroup) {
+          icoGroup.rotation.y += (headMotion.yaw * 0.5 - icoGroup.rotation.y) * Math.min(1, dt * 2.5);
+          icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
+          icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
+        } else if (icoGroup && state === 'agent') {
+          const swayAmp = 0.6;
+          const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
+          icoGroup.rotation.y += (sway - icoGroup.rotation.y) * Math.min(1, dt * 2);
+          icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
+        }
+        // Vertical breathing bob
+        if (icoGroup) icoGroup.position.y = 0.01 * Math.sin(t * 1.3 + 0.6) * 0.6;
+      }
+      renderer.render(scene, camera);
+    }
+    requestAnimationFrame(animate);
 
     // --- Raycasting ---
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-    const tooltip = document.getElementById('tooltip');
 
-    const clickables = [
-      { mesh: icosahedron, url: '/wylan.html', label: 'wylan' },
-      { mesh: ribbonMesh, url: '/blogs.html', label: 'forest paths' },
-    ];
-
-    let hoveredMesh = null;
-
-    function getClickableTarget(obj) {
-      return clickables.find(c => c.mesh === obj);
-    }
-
-    window.addEventListener('mousemove', (e) => {
+    window.addEventListener('click', (e) => {
+      if (state !== 'landing') return;
       mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
       mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-
       raycaster.setFromCamera(mouse, camera);
-      const meshes = clickables.map(c => c.mesh);
-      const intersects = raycaster.intersectObjects(meshes);
+      const hits = raycaster.intersectObject(hitSphere);
+      if (hits.length > 0) triggerTransform();
+    });
 
-      if (intersects.length > 0) {
-        const obj = intersects[0].object;
-        const target = getClickableTarget(obj);
-        if (target) {
-          document.body.style.cursor = 'pointer';
-          tooltip.textContent = target.label;
-          tooltip.classList.add('visible');
-          tooltip.style.left = e.clientX + 'px';
-          tooltip.style.top = (e.clientY - 30) + 'px';
-          hoveredMesh = obj;
+    window.addEventListener('mousemove', (e) => {
+      if (state !== 'landing') return;
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObject(hitSphere);
+      document.body.style.cursor = hits.length > 0 ? 'pointer' : 'default';
+    });
+
+    // --- Autonomous behavior ---
+    let behavior = null;
+
+    function startBehavior() {
+      const blinkPeriod = 2.5 + Math.random() * 3;
+      let blinkTimer = Math.random() * blinkPeriod;
+      let blinkPhase = 0;
+      let isBlinking = false;
+      let gazeX = 0, gazeY = 0, gazeTargetX = 0, gazeTargetY = 0, gazeTimer = 0;
+      let mouthOpen = 0, mouthTarget = 0, mouthTimer = 0;
+      let hasBlinked = false;
+
+      window.__scene.behavior = {
+        update(dt) {
+          blinkTimer -= dt;
+          if (isBlinking) {
+            blinkPhase += dt / 0.15;
+            if (blinkPhase >= 1) { isBlinking = false; blinkPhase = 0; blinkTimer = blinkPeriod * (0.5 + Math.random()); }
+            if (blinkPhase > 0.4 && blinkPhase < 0.6) hasBlinked = true;
+          } else if (blinkTimer <= 0) {
+            isBlinking = true; blinkPhase = 0;
+          }
+          const bf = isBlinking ? (blinkPhase < 0.45 ? blinkPhase / 0.45 : 1 - (blinkPhase - 0.45) / 0.55) : 0;
+
+          gazeTimer -= dt;
+          if (gazeTimer <= 0) {
+            gazeTargetX = (Math.random() - 0.5) * 0.08;
+            gazeTargetY = (Math.random() - 0.5) * 0.04;
+            gazeTimer = 0.5 + Math.random() * 2;
+          }
+          gazeX += (gazeTargetX - gazeX) * dt * 4;
+          gazeY += (gazeTargetY - gazeY) * dt * 4;
+
+          mouthTimer -= dt;
+          if (mouthTimer <= 0) {
+            mouthTarget = Math.random() < 0.3 ? 0.03 + Math.random() * 0.05 : 0;
+            mouthTimer = 0.3 + Math.random() * 1.5;
+          }
+          mouthOpen += (mouthTarget - mouthOpen) * dt * 8;
+
+          return { blink: bf, gazeX, gazeY, mouth: mouthOpen, hasBlinked };
         }
-      } else {
-        document.body.style.cursor = 'default';
-        tooltip.classList.remove('visible');
-        hoveredMesh = null;
-      }
-    });
+      };
 
-    window.addEventListener('click', () => {
-      if (hoveredMesh) {
-        const target = getClickableTarget(hoveredMesh);
-        if (target) window.location.href = target.url;
+      window.__scene.behavior._hasBlinked = () => hasBlinked;
+    }
+
+    // --- Wave 2: _applyVisemeBlendshapesToLandmarks ---
+    function applyVisemeBlendshapesToLandmarks(jawOpen, smile, pucker, funnel, close) {
+      if (!workingBuffer || !baseLMs) return;
+      for (let i = 0; i < NUM; i++) {
+        workingBuffer[i].x = baseLMs[i].x;
+        workingBuffer[i].y = baseLMs[i].y;
+        workingBuffer[i].z = baseLMs[i].z;
       }
-    });
+      if (jawOpen > 0.001 && jawWeights) {
+        for (let i = 0; i < NUM; i++) {
+          const w = jawWeights[i];
+          if (w > 0) {
+            workingBuffer[i].y += -0.45 * jawOpen * w;
+          }
+        }
+        const upperLip = [0,17,37,39,40,61,91,146,181,185,267,269,270,291,314,321,375,405,409];
+        for (const idx of upperLip) if (workingBuffer[idx]) workingBuffer[idx].y += 0.27 * jawOpen;
+        for (const idx of MOUTH_OUTER) if (workingBuffer[idx]) workingBuffer[idx].y -= 0.18 * jawOpen;
+        for (const idx of MOUTH_INNER) if (workingBuffer[idx]) workingBuffer[idx].y -= 0.16 * jawOpen;
+        const jawCurve = [0,17,37,39,40,61,91,146,181,185,267,269,270,291,314,321,375,405,409];
+        for (const idx of jawCurve) if (workingBuffer[idx]) workingBuffer[idx].y -= 0.15 * jawOpen;
+        if (noseBaseWeight) { for (let i = 0; i < NUM; i++) { if (noseBaseWeight[i] > 0) workingBuffer[i].y -= 0.03 * jawOpen; } }
+        if (cheekWeight) { for (let i = 0; i < NUM; i++) { if (cheekWeight[i] > 0) workingBuffer[i].z -= 0.05 * jawOpen; } }
+      }
+      if (smile > 0.001) {
+        if (workingBuffer[61]) workingBuffer[61].x -= 0.12 * smile;
+        if (workingBuffer[291]) workingBuffer[291].x += 0.12 * smile;
+      }
+      if (pucker > 0.01) {
+        if (workingBuffer[61]) workingBuffer[61].x += 0.04 * pucker;
+        if (workingBuffer[291]) workingBuffer[291].x -= 0.04 * pucker;
+      }
+      if (funnel > 0.01) {
+        if (workingBuffer[61]) workingBuffer[61].x += 0.04 * funnel;
+        if (workingBuffer[291]) workingBuffer[291].x -= 0.04 * funnel;
+        if (workingBuffer[0]) workingBuffer[0].z -= 0.02 * funnel;
+        if (workingBuffer[17]) workingBuffer[17].z -= 0.02 * funnel;
+      }
+      if (close > 0.01) {
+        for (const idx of [61, 291, 0, 17]) {
+          if (workingBuffer[idx]) workingBuffer[idx].y += 0.06 * close;
+        }
+      }
+    }
+
+    // --- Wave 2: VisemeEngine ---
+    const VisemeEngine = {
+      plan: [],
+      planCursor: 0,
+      elapsed: 0,
+      talking: false,
+      smoothedJaw: 0, smoothedSmile: 0, smoothedPucker: 0, smoothedFunnel: 0, smoothedClose: 0,
+      smoothedIntensity: 0,
+
+      _parseSyllables(word) {
+        const groups = []; let cur = ''; let isVowel = false;
+        for (const ch of word.toLowerCase()) {
+          const v = VOWEL_SET.has(ch);
+          if (v !== isVowel && cur) { groups.push(cur); cur = ''; }
+          isVowel = v; cur += ch;
+        }
+        if (cur) groups.push(cur);
+        return groups;
+      },
+
+      _vowelViseme(syl) {
+        for (const ch of syl) if (VOWEL_SET.has(ch)) return VOWEL_VISEMES[ch] || 'E';
+        return 'E';
+      },
+
+      buildSyllablePlan(text) {
+        this.plan = []; this.planCursor = 0; this.elapsed = 0;
+        const words = text.split(/\s+/);
+        let t = 0;
+        for (let wi = 0; wi < words.length; wi++) {
+          const word = words[wi].replace(/[^a-zA-Z0-9']/g, '');
+          if (!word) continue;
+          const isFunc = FUNCTION_WORDS.has(word.toLowerCase());
+          const syls = this._parseSyllables(word);
+          for (let si = 0; si < syls.length; si++) {
+            const syl = syls[si];
+            const viseme = this._vowelViseme(syl);
+            const stress = isFunc ? 0.5 : (si === 0 ? 0.9 : 0.6);
+            const dur = 0.18 + (syl.length > 2 ? 0.06 : 0) + (stress > 0.7 ? 0.04 : 0);
+            this.plan.push({ viseme, startTime: t, duration: dur, stress });
+            t += dur;
+          }
+          const punct = words[wi].match(/[,.!?;:]/) ? 0.3 : (wi < words.length - 1 ? 0.06 : 0);
+          t += punct;
+        }
+        this.talking = this.plan.length > 0;
+      },
+
+      update(dt) {
+        if (!this.talking || dt <= 0 || isNaN(dt)) return;
+        this.elapsed += dt;
+        while (this.planCursor < this.plan.length && this.elapsed >= this.plan[this.planCursor].startTime + this.plan[this.planCursor].duration) {
+          this.planCursor++;
+        }
+        if (this.planCursor >= this.plan.length) { this.talking = false; return; }
+
+        const cur = this.plan[this.planCursor];
+        const prog = Math.min(1, Math.max(0, (this.elapsed - cur.startTime) / cur.duration));
+        const next = this.plan[this.planCursor + 1];
+        const coartic = prog > 0.7 && next ? 0.3 : 0;
+
+        let jaw = 0, smileVal = 0, pucker = 0, funnel = 0, close = 0;
+        const v = cur.viseme;
+        const intensity = cur.stress * (prog < 0.15 ? prog / 0.15 : (prog > 0.85 ? (1 - prog) / 0.15 : 1));
+        if (v === 'A') { jaw = 0.4; }
+        else if (v === 'E') { jaw = 0.25; smileVal = 0.15; }
+        else if (v === 'I') { jaw = 0.1; smileVal = 0.2; }
+        else if (v === 'O') { jaw = 0.3; funnel = 0.2; }
+        else if (v === 'U') { jaw = 0.15; pucker = 0.25; }
+        else if (v === 'F') { jaw = 0.05; close = 0.3; }
+        else if (v === 'M') { jaw = 0.02; close = 0.4; }
+
+        if (coartic > 0 && next) {
+          const nv = next.viseme;
+          const blend = coartic;
+          if (nv === 'A') { jaw = jaw * (1-blend) + 0.4 * blend; }
+          else if (nv === 'E') { jaw = jaw * (1-blend) + 0.25 * blend; smileVal = smileVal * (1-blend) + 0.15 * blend; }
+          else if (nv === 'O') { jaw = jaw * (1-blend) + 0.3 * blend; funnel = funnel * (1-blend) + 0.2 * blend; }
+        }
+
+        jaw = Math.min(0.5, jaw * intensity);
+        smileVal = Math.min(0.5, smileVal * intensity);
+        pucker = Math.min(0.4, pucker * intensity);
+        funnel = Math.min(0.4, funnel * intensity);
+        close = Math.min(0.5, close * intensity);
+
+        const spd = Math.min(1, 1 - Math.exp(-12 * dt));
+        this.smoothedJaw += (jaw - this.smoothedJaw) * spd;
+        this.smoothedSmile += (smileVal - this.smoothedSmile) * spd;
+        this.smoothedPucker += (pucker - this.smoothedPucker) * spd;
+        this.smoothedFunnel += (funnel - this.smoothedFunnel) * spd;
+        this.smoothedClose += (close - this.smoothedClose) * spd;
+        this.smoothedIntensity += (intensity - this.smoothedIntensity) * Math.min(1, 1 - Math.exp(-15 * dt));
+
+        applyVisemeBlendshapesToLandmarks(
+          this.smoothedJaw * this.smoothedIntensity,
+          this.smoothedSmile * this.smoothedIntensity,
+          this.smoothedPucker * this.smoothedIntensity,
+          this.smoothedFunnel * this.smoothedIntensity,
+          this.smoothedClose * this.smoothedIntensity
+        );
+      },
+
+      stop() { this.talking = false; this.plan = []; this.planCursor = 0; this.elapsed = 0; },
+    };
+
+    // --- Wave 2: EmotionState ---
+    const EmotionState = {
+      current: 'neutral', target: 'neutral', blend: 0, strength: 1.0, transitionSpeed: 3.0,
+
+      setExpression(name, strength = 1.0) {
+        if (!scanData || !scanData.expressions || !scanData.expressions[name]) return;
+        this.target = name; this.strength = strength; this.blend = 0;
+      },
+
+      update(dt) {
+        if (this.target === 'neutral' || this.blend >= 1) return;
+        this.blend = Math.min(1, this.blend + dt * this.transitionSpeed);
+        this.applyToWorkingBuffer();
+      },
+
+      applyToWorkingBuffer() {
+        const expr = scanData?.expressions?.[this.target];
+        if (!expr || !expr.landmarks || !workingBuffer || !baseLMs) return;
+        const t = this.blend * this.strength;
+        for (let i = 0; i < NUM; i++) {
+          const d = expr.landmarks[i] || { x: 0, y: 0, z: 0 };
+          workingBuffer[i].x = baseLMs[i].x + d.x * FACE_SCALE * t;
+          workingBuffer[i].y = baseLMs[i].y - d.y * FACE_SCALE_Y * t;
+          workingBuffer[i].z = baseLMs[i].z + (d.z || 0) * FACE_SCALE_Z * t;
+        }
+      },
+
+      reset() {
+        this.current = 'neutral'; this.target = 'neutral'; this.blend = 0;
+        if (workingBuffer && baseLMs) {
+          for (let i = 0; i < NUM; i++) {
+            workingBuffer[i].x = baseLMs[i].x;
+            workingBuffer[i].y = baseLMs[i].y;
+            workingBuffer[i].z = baseLMs[i].z;
+          }
+        }
+      },
+    };
+
+    // --- Wave 2: HeadMotion engine ---
+    const HeadMotion = {
+      phase: Math.random() * Math.PI * 2,
+      targetYaw: 0, targetPitch: 0, targetRoll: 0,
+      curYaw: 0, curPitch: 0, curRoll: 0,
+      nextShift: 2,
+
+      update(dt) {
+        if (!scanData || !scanData.headProfile) return null;
+        this.nextShift -= dt;
+        if (this.nextShift <= 0) {
+          const hp = scanData.headProfile;
+          const r = () => (Math.random() - 0.5) * 2;
+          const amp = (v) => Array.isArray(v) ? Math.max(Math.abs(v[0]||0), Math.abs(v[1]||0)) : (v || 0.15);
+          this.targetYaw = r() * amp(hp.yawRange);
+          this.targetPitch = r() * amp(hp.pitchRange);
+          this.targetRoll = r() * amp(hp.rollRange);
+          this.nextShift = 1.5 + Math.random() * 3;
+        }
+        const spd = Math.min(1, dt * 2.5);
+        this.curYaw += (this.targetYaw - this.curYaw) * spd;
+        this.curPitch += (this.targetPitch - this.curPitch) * spd;
+        this.curRoll += (this.targetRoll - this.curRoll) * spd;
+        this.targetYaw *= 0.995; this.targetPitch *= 0.995; this.targetRoll *= 0.995;
+        return { yaw: this.curYaw, pitch: this.curPitch, roll: this.curRoll };
+      },
+    };
+
+    // --- Wave 2: Iris position helper ---
+    function computeIrisPositions(gazeX, gazeY) {
+      const leftEyeCenter = { x: 0, y: 0, z: 0 }; let leftN = 0;
+      const rightEyeCenter = { x: 0, y: 0, z: 0 }; let rightN = 0;
+      const leftEyeIdx = [33,246,161,160,159,158,157,173,133,155,154,153,145,144,163,7];
+      const rightEyeIdx = [362,398,384,385,386,387,388,466,263,249,390,373,374,380,381,382];
+      for (const idx of leftEyeIdx) {
+        if (workingBuffer[idx]) { leftEyeCenter.x += workingBuffer[idx].x; leftEyeCenter.y += workingBuffer[idx].y; leftEyeCenter.z += workingBuffer[idx].z; leftN++; }
+      }
+      for (const idx of rightEyeIdx) {
+        if (workingBuffer[idx]) { rightEyeCenter.x += workingBuffer[idx].x; rightEyeCenter.y += workingBuffer[idx].y; rightEyeCenter.z += workingBuffer[idx].z; rightN++; }
+      }
+      if (leftN > 0) { leftEyeCenter.x /= leftN; leftEyeCenter.y /= leftN; leftEyeCenter.z /= leftN; }
+      if (rightN > 0) { rightEyeCenter.x /= rightN; rightEyeCenter.y /= rightN; rightEyeCenter.z /= rightN; }
+      return {
+        left: { x: leftEyeCenter.x + gazeX * 0.07, y: leftEyeCenter.y + gazeY * 0.06, z: leftEyeCenter.z + 0.03 },
+        right: { x: rightEyeCenter.x + gazeX * 0.07, y: rightEyeCenter.y + gazeY * 0.06, z: rightEyeCenter.z + 0.03 },
+      };
+    }
+
+    // --- TTS (Wave 4) ---
+    let ttsVoices = [];
+    let ttsPrimed = false;
+
+    function unlockSpeech() {
+      if (ttsPrimed) return;
+      if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance('');
+        u.volume = 0; speechSynthesis.speak(u); ttsPrimed = true;
+      }
+    }
+
+    function pickVoice(prefix) {
+      if (!ttsVoices.length && 'speechSynthesis' in window) ttsVoices = speechSynthesis.getVoices();
+      return ttsVoices.find(v => v.lang.startsWith(prefix)) || null;
+    }
+
+    function say(text) {
+      return new Promise((resolve) => {
+        if (!('speechSynthesis' in window)) { resolve(); return; }
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US';
+        u.voice = pickVoice(u.lang.substring(0, 2));
+        u.rate = 1.02;
+        let resolved = false;
+        u.onstart = () => { VisemeEngine.buildSyllablePlan(text); VisemeEngine.talking = true; };
+        u.onend = () => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } };
+        u.onerror = () => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } };
+        speechSynthesis.speak(u);
+        setTimeout(() => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } }, 600 + text.length * 90);
+      });
+    }
+
+    // --- Chat history (Wave 4) ---
+    const chatHistory = [];
+
+    // --- Wave 4: ask function (chat → viseme → speak) ---
+    async function ask(text) {
+      if (!text.trim()) return;
+      convoEl.textContent = '...';
+      unlockSpeech();
+      try {
+        const r = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, history: chatHistory.slice(-10) }),
+        });
+        const data = await r.json();
+        const reply = data.response || data.reply || '...';
+        convoEl.textContent = reply;
+        chatHistory.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+        VisemeEngine.buildSyllablePlan(reply);
+        await say(reply);
+      } catch {
+        convoEl.textContent = 'Could not reach the agent. Is the server running?';
+      }
+    }
+
+    // --- Voice Input (F21-F25): VAD + Recording + Continuous mode ---
+    let micStream = null;
+    let audioCtx = null;
+    let analyser = null;
+    let vadInterval = null;
+    let recorder = null;
+    let recorderChunks = [];
+    let continuousMode = false;
+    let contLoopActive = false;
+    let contAbort = false;
+
+    async function ensureMic() {
+      if (micStream) return micStream;
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      return micStream;
+    }
+
+    function ensureAudioCtx() {
+      if (audioCtx) return audioCtx;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      return audioCtx;
+    }
+
+    function getRMS() {
+      if (!analyser) return 0;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = data[i] / 128 - 1; sum += v * v; }
+      return Math.sqrt(sum / data.length);
+    }
+
+    function startRecording() {
+      return new Promise((resolve) => {
+        if (!micStream) { resolve(null); return; }
+        const mime = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' :
+                     MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+        recorderChunks = [];
+        recorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : {});
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) recorderChunks.push(e.data); };
+        recorder.onstop = () => resolve(new Blob(recorderChunks, { type: mime || 'audio/webm' }));
+        recorder.start();
+      });
+    }
+
+    function stopRecording() {
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
+    }
+
+    async function transcribeRecording(blob) {
+      if (!blob || blob.size === 0) return '';
+      const form = new FormData();
+      form.append('audio', blob, 'recording.' + (blob.type.includes('mp4') ? 'mp4' : 'webm'));
+      try {
+        const r = await fetch('/api/transcribe', { method: 'POST', body: form });
+        const data = await r.json();
+        return data.text || '';
+      } catch {
+        return '';
+      }
+    }
+
+    function startVAD(callback) {
+      if (vadInterval) return;
+      const THRESHOLD = 0.015;
+      const SILENCE_TICKS = 16;
+      const WARMUP_TICKS = 6;
+      let silenceCount = 0;
+      let warmupCount = 0;
+      const source = audioCtx.createMediaStreamSource(micStream);
+      source.connect(analyser);
+      vadInterval = setInterval(() => {
+        const rms = getRMS();
+        if (rms > THRESHOLD) { silenceCount = 0; warmupCount++; }
+        else { silenceCount++; }
+        if (warmupCount >= WARMUP_TICKS && silenceCount >= SILENCE_TICKS) {
+          callback();
+        }
+      }, 150);
+    }
+
+    function stopVAD() {
+      if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+    }
+
+    function setContState(st) {
+      micBtn.classList.remove('live', 'cont-active');
+      if (st === 'live') { micBtn.classList.add('live'); micBtn.textContent = 'Stop'; }
+      else if (st === 'cont-active') { micBtn.classList.add('cont-active'); micBtn.textContent = 'Continuous \u00b7 on'; }
+      else { micBtn.textContent = 'Continuous'; }
+    }
+
+    async function conversationStep() {
+      if (contAbort) { contAbort = false; contLoopActive = false; return; }
+      unlockSpeech();
+      setContState('live');
+      const blobP = startRecording();
+      startVAD(async () => {
+        stopVAD();
+        stopRecording();
+        setContState('cont-active');
+        const blob = await blobP;
+        const text = await transcribeRecording(blob);
+        if (text.trim()) {
+          chatInput.value = text;
+          await ask(text);
+          chatInput.value = '';
+        }
+        if (continuousMode && !contAbort) {
+          setTimeout(() => conversationStep(), 300);
+        } else {
+          contLoopActive = false;
+        }
+      });
+    }
+
+    function enterContinuous() {
+      if (continuousMode) return;
+      continuousMode = true;
+      contAbort = false;
+      contLoopActive = true;
+      ensureMic().then(() => {
+        ensureAudioCtx();
+        audioCtx.resume();
+        conversationStep();
+      }).catch(() => {
+        convoEl.textContent = 'Mic access denied.';
+        continuousMode = false;
+        setContState(null);
+      });
+    }
+
+    function exitContinuous() {
+      continuousMode = false;
+      contAbort = true;
+      stopVAD();
+      stopRecording();
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      if (audioCtx) { audioCtx.close(); audioCtx = null; analyser = null; }
+      setContState(null);
+    }
 
     // --- Resize ---
     window.addEventListener('resize', () => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const w = window.innerWidth, h = window.innerHeight;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     });
 
-    // --- RAF Loop ---
-    const vec3 = new THREE.Vector3();
+    // --- Chat ---
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const micBtn = document.getElementById('micBtn');
+    const convoEl = document.getElementById('convo');
 
-    function raf(time) {
-      const t = time * 0.001;
+    sendBtn.addEventListener('click', () => { ask(chatInput.value); chatInput.value = ''; });
+    chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { ask(chatInput.value); chatInput.value = ''; } });
 
-      // Torus knot auto-rotation
-      knot.rotation.x += 0.003;
-      knot.rotation.y += 0.005;
-      knot.rotation.z += 0.001;
-
-      // Orbit group rotates
-      orbitGroup.rotation.y += 0.002;
-
-      // Camera idle breathing
-      camera.position.y = Math.sin(t * 0.3) * 0.15;
-      camera.position.z = 8 + Math.sin(t * 0.4) * 0.3;
-      camera.lookAt(0, 0, 0);
-
-      // Hover effects — smooth interpolation
-      if (hoveredMesh) {
-        hoveredMesh.scale.lerp(new THREE.Vector3(1.2, 1.2, 1.2), 0.1);
-        if (hoveredMesh.material && hoveredMesh.material.emissiveIntensity !== undefined) {
-          hoveredMesh.material.emissiveIntensity += (0.5 - hoveredMesh.material.emissiveIntensity) * 0.1;
+    micBtn.addEventListener('click', () => {
+      if (micBtn.classList.contains('live')) {
+        stopVAD(); stopRecording(); setContState(null);
+      } else if (continuousMode) {
+        exitContinuous();
+      } else {
+        unlockSpeech();
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+          const rec = new SR();
+          rec.lang = 'en-US'; rec.interimResults = false; rec.continuous = false;
+          rec.onresult = (e) => { const t = e.results[0][0].transcript; chatInput.value = t; ask(t); chatInput.value = ''; setContState(null); };
+          rec.onerror = () => { setContState(null); };
+          rec.onend = () => { setContState(null); };
+          setContState('live');
+          rec.start();
+        } else {
+          enterContinuous();
         }
       }
-      clickables.forEach(c => {
-        if (c.mesh !== hoveredMesh) {
-          c.mesh.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
-          if (c.mesh.material && c.mesh.material.emissiveIntensity !== undefined) {
-            c.mesh.material.emissiveIntensity += (0.1 - c.mesh.material.emissiveIntensity) * 0.1;
-          }
-        }
-      });
+    });
 
-      renderer.render(scene, camera);
-      requestAnimationFrame(raf);
-    }
-    requestAnimationFrame(raf);
+    window.__contHooks = { enterContinuous, exitContinuous, setContState, transcribeRecording };
+
+    // --- Wave 5: window.agentAvatar public API ---
+    window.agentAvatar = {
+      loaded: true,
+      setTalking(v) { VisemeEngine.talking = v; if (!v) VisemeEngine.stop(); },
+      speak(text) { unlockSpeech(); VisemeEngine.buildSyllablePlan(text); say(text); },
+      lookAt(x, y) { /* gaze tracking from external source */ },
+      express(name, strength) { EmotionState.setExpression(name, strength); },
+      loadProfile(data) { /* future: dynamic profile loading */ },
+      resetFace() { EmotionState.reset(); },
+      _setBlink(b) {},
+    };
+
+    // --- Wave 5: Test hooks ---
+    window.__testHooks = {
+      get VisemeEngine() { return VisemeEngine; },
+      get EmotionState() { return EmotionState; },
+      get HeadMotion() { return HeadMotion; },
+      get behavior() { return window.__scene?.behavior; },
+      get scanData() { return scanData; },
+      get workingBuffer() { return workingBuffer; },
+      get jawWeights() { return jawWeights; },
+      get mouthCavityMesh() { return faceMouthCavity; },
+    };
   </script>
 </body>
 </html>

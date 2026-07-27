@@ -9,3 +9,7 @@ node_modules/
 .env*
 .playwright-mcp/
 three.min.js
+data/
+logs/
+test-results/
+landing-state.png
