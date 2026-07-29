@@ -433,9 +433,9 @@
 
       function topologyEdges(geo, faceIndices, N) {
         const pos = geo.attributes.position;
-        // MeshSurfaceSampler always produces non-indexed geometry, where each
-        // consecutive triple of vertices is one triangle.
-        const triCount = pos.count / 3;
+        const hasIndex = geo.index !== null;
+        // Indexed geo: triangles = index.count/3. Non-indexed: pos.count/3.
+        const triCount = (hasIndex ? geo.index.count : pos.count) / 3;
 
         const edgeToFace = {};
 
@@ -446,9 +446,9 @@
         };
 
         for (let t = 0; t < triCount; t++) {
-          const i0 = t * 3;
-          const i1 = t * 3 + 1;
-          const i2 = t * 3 + 2;
+          const i0 = hasIndex ? geo.index.getX(t * 3) : t * 3;
+          const i1 = hasIndex ? geo.index.getX(t * 3 + 1) : t * 3 + 1;
+          const i2 = hasIndex ? geo.index.getX(t * 3 + 2) : t * 3 + 2;
           addFaceEdge(i0, i1, t);
           addFaceEdge(i1, i2, t);
           addFaceEdge(i2, i0, t);
@@ -1122,13 +1122,14 @@
       const mat = new THREE.MeshBasicMaterial();
       const mesh = new THREE.Mesh(geo, mat);
 
-      const { points, faceIndices, geometry: niGeo } = SurfaceMorphEngine.sampleFromMesh(mesh, NUM);
+      const { points, faceIndices } = SurfaceMorphEngine.sampleFromMesh(mesh, NUM);
       const normalized = SurfaceMorphEngine.normalizeToUnitSphere(points);
 
       shapeTargets = normalized;
 
-      // Use the non-indexed geometry from the sampler — faceIndices reference its triangles
-      shapeTargetEdgeIndices = SurfaceMorphEngine.topologyEdges(niGeo, faceIndices, NUM);
+      // Use original indexed geo for edge detection — shared vertex indices
+      // correctly identify faces that share a geometric edge.
+      shapeTargetEdgeIndices = SurfaceMorphEngine.topologyEdges(geo, faceIndices, NUM);
 
       geo.dispose();
       mat.dispose();
