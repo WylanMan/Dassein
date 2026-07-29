@@ -63,7 +63,7 @@
     .stage {
       width: min(78vmin, 600px); aspect-ratio: 1;
       border-radius: 50%; overflow: hidden; position: relative;
-      box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.10), 0 0 60px -10px rgba(0, 212, 255, 0.08), 0 20px 60px -15px rgba(0, 0, 0, 0.8);
+      box-shadow: 0 0 60px -10px rgba(0, 212, 255, 0.08), 0 20px 60px -15px rgba(0, 0, 0, 0.8);
     }
     .stage canvas { display: block; width: 100%; height: 100%; }
     .stage::after {
@@ -85,6 +85,30 @@
     .convo {
       min-height: 20px; max-width: 480px; text-align: center;
       font-size: 14px; color: #9a97a3; line-height: 1.5;
+      max-height: 36vh; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 0 16px;
+    }
+    .msg-line {
+      max-width: 85%; padding: 8px 14px; border-radius: 16px;
+      font-size: 13px; line-height: 1.45; word-break: break-word;
+    }
+    .msg-line.user {
+      align-self: flex-end;
+      background: rgba(0, 212, 255, 0.08); color: #b9b6c2;
+      border: 1px solid rgba(0, 212, 255, 0.12);
+    }
+    .msg-line.assistant {
+      align-self: flex-start;
+      background: rgba(255, 255, 255, 0.03); color: #b9b6c2;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .msg-line.streaming::after {
+      content: '|'; animation: blink-cursor 0.7s infinite;
+      color: #00d4ff; font-weight: bold;
+    }
+    @keyframes blink-cursor {
+      50% { opacity: 0; }
     }
 
     .bar { display: flex; gap: 10px; align-items: center; }
@@ -107,6 +131,20 @@
     button:hover { background: #1c1c28; border-color: rgba(0, 212, 255, 0.35); color: #b9b6c2; }
     #micBtn.live { background: #201518; border-color: #ff4466; color: #ffb3ba; }
     #micBtn.cont-active { background: #142218; border-color: #44ff88; color: #b3ffba; }
+
+    .shape-row {
+      display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
+      opacity: 0; pointer-events: none; transition: opacity 0.5s;
+    }
+    .shape-row.visible { opacity: 1; pointer-events: all; }
+    .shape-pill {
+      font-size: 11px; padding: 4px 12px; border-radius: 999px;
+      background: rgba(0, 212, 255, 0.06); color: #9a97a3;
+      border: 1px solid rgba(0, 212, 255, 0.10);
+      cursor: pointer; transition: all 0.25s;
+    }
+    .shape-pill:hover { background: rgba(0, 212, 255, 0.12); color: #b9b6c2; border-color: rgba(0, 212, 255, 0.25); }
+    .shape-pill.active { background: rgba(0, 212, 255, 0.15); color: #00d4ff; border-color: rgba(0, 212, 255, 0.40); }
   </style>
 </head>
 <body>
@@ -136,6 +174,14 @@
     <div class="convo" id="convo">
       Ask anything. I answer in Wylan's words.
     </div>
+    <div class="shape-row" id="shapeRow">
+      <span class="shape-pill active" data-shape="face">face</span>
+      <span class="shape-pill" data-shape="sphere">sphere</span>
+      <span class="shape-pill" data-shape="cube">cube</span>
+      <span class="shape-pill" data-shape="cylinder">cylinder</span>
+      <span class="shape-pill" data-shape="pyramid">pyramid</span>
+      <span class="shape-pill" data-shape="torus">torus</span>
+    </div>
     <div class="bar">
       <input id="chatInput" type="text" placeholder="Ask me something..." autocomplete="off"/>
       <button id="sendBtn">&rarr;</button>
@@ -155,6 +201,9 @@
   <script type="module">
     import * as THREE from 'three';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     const NUM = 478;
     const FACE_SCALE = 2.8;
@@ -184,6 +233,174 @@
     let baseLMs = null;
     let workingBuffer = null;
     let state = 'landing';
+    let currentShape = 'face';
+    let shapeTargets = null;
+    let shapeTargetEdgeIndices = null;
+    let nnIndices = [];
+    let faceNNIndices = [];
+
+    // ═══ Scroll-Driven Rotation Controller ═══
+    const ScrollController = (() => {
+      // ── Configuration ──
+      const CFG = {
+        globeSpeedX: 0.0008,
+        globeSpeedY: 0.0015,
+        globeSpeedZ: 0.0003,
+        reducedGlobeSpeedX: 0.00008,
+        reducedGlobeSpeedY: 0.00015,
+        reducedGlobeSpeedZ: 0.00003,
+        scrollFactor: 0.00005,
+        fallbackMouseFactor: 0.000015,
+        damping: 0.96,
+        maxSpinVelocity: 0.1,
+        velocityDeadZone: 0.0005,
+        faceIdleDelay: 400,
+        faceSpringFast: 0.06,
+        faceSpringSlow: 0.02,
+        faceZoneThreshold: 0.35,
+        faceSnapThreshold: 0.001,
+        faceRestThreshold: 0.002,
+        tapMaxMovement: 5,
+        tapMaxDuration: 300,
+      };
+
+      let spinVelocity = 0;
+      let globeAngleY = 0;
+      let faceOffsetY = 0;
+      let faceSpringActive = false;
+      let faceSpringTimer = null;
+      let lastScrollTime = 0;
+      let consecutiveStillFrames = 0;
+      let enabled = !REDUCED_MOTION;
+
+      let touchStartX = 0, touchStartY = 0, touchStartTime = 0, touchActive = false, touchPrevX = 0;
+
+      function handleWheel(e) {
+        if (!enabled) return;
+        if (typeof isAnimating !== 'undefined' && isAnimating) return;
+        if (REDUCED_MOTION) return;
+        e.preventDefault();
+        let delta = 0, isTrackpad = false;
+        if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+          isTrackpad = true;
+          delta = e.deltaX;
+          if (Math.abs(delta) < 0.01 && e.shiftKey) delta = e.deltaY;
+          if (Math.abs(delta) < 0.01) { delta = e.deltaY; isTrackpad = false; }
+        } else {
+          delta = e.deltaX;
+          if (Math.abs(delta) < 0.01 && e.shiftKey) delta = e.deltaY;
+          if (Math.abs(delta) < 0.01) delta = e.deltaY;
+        }
+        const factor = isTrackpad ? CFG.scrollFactor : CFG.fallbackMouseFactor;
+        const addition = Math.sign(delta) * Math.min(Math.abs(delta) * factor, 0.003);
+        spinVelocity += addition;
+        spinVelocity = Math.max(-CFG.maxSpinVelocity, Math.min(CFG.maxSpinVelocity, spinVelocity));
+        lastScrollTime = performance.now();
+        consecutiveStillFrames = 0;
+        if (faceSpringActive) faceSpringActive = false;
+        if (faceSpringTimer) { clearTimeout(faceSpringTimer); faceSpringTimer = null; }
+      }
+
+      function handleTouchStart(e) {
+        if (!enabled || typeof isAnimating === 'undefined' || isAnimating || REDUCED_MOTION || e.touches.length !== 1) return;
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchPrevX = touchStartX;
+        touchStartTime = performance.now();
+        touchActive = true;
+        e.preventDefault();
+      }
+
+      function handleTouchMove(e) {
+        if (!touchActive) return;
+        e.preventDefault();
+        const x = e.touches[0].clientX;
+        const dx = x - touchPrevX;
+        touchPrevX = x;
+        if (Math.abs(dx) > 0.5) {
+          spinVelocity += dx * 0.0001;
+          spinVelocity = Math.max(-CFG.maxSpinVelocity, Math.min(CFG.maxSpinVelocity, spinVelocity));
+          lastScrollTime = performance.now();
+          consecutiveStillFrames = 0;
+          if (faceSpringActive) faceSpringActive = false;
+          if (faceSpringTimer) { clearTimeout(faceSpringTimer); faceSpringTimer = null; }
+        }
+      }
+
+      function handleTouchEnd(e) {
+        if (!touchActive) return;
+        touchActive = false;
+        const totalDx = (e.changedTouches[0]?.clientX || touchPrevX) - touchStartX;
+        const totalDy = (e.changedTouches[0]?.clientY || touchStartY) - touchStartY;
+        const duration = performance.now() - touchStartTime;
+        const distance = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
+        if (distance < CFG.tapMaxMovement && duration < CFG.tapMaxDuration) return;
+        e.preventDefault();
+      }
+
+      function update(dt) {
+        if (REDUCED_MOTION) {
+          globeAngleY += CFG.reducedGlobeSpeedY * dt * 60;
+          return;
+        }
+        spinVelocity *= Math.pow(CFG.damping, dt * 60);
+        if (Math.abs(spinVelocity) < CFG.velocityDeadZone) {
+          spinVelocity = 0;
+          consecutiveStillFrames++;
+        } else {
+          consecutiveStillFrames = 0;
+        }
+        if (state === 'landing') {
+          globeAngleY += (CFG.globeSpeedY + spinVelocity) * dt * 60;
+        }
+        if (state === 'agent') {
+          faceOffsetY += spinVelocity * dt * 60;
+          faceOffsetY = Math.max(-1.0, Math.min(1.0, faceOffsetY));
+          const scrolledRecently = (performance.now() - lastScrollTime) < CFG.faceIdleDelay;
+          const velocityDead = spinVelocity === 0 && consecutiveStillFrames >= 3;
+          if (!scrolledRecently && velocityDead && !faceSpringActive) faceSpringActive = true;
+          if (faceSpringActive) {
+            const absOffset = Math.abs(faceOffsetY);
+            const springRate = absOffset < CFG.faceZoneThreshold ? CFG.faceSpringFast : CFG.faceSpringSlow;
+            faceOffsetY += (0 - faceOffsetY) * springRate * dt * 60;
+            if (absOffset < CFG.faceSnapThreshold) {
+              faceOffsetY = 0;
+              faceSpringActive = false;
+              consecutiveStillFrames = 0;
+            }
+          }
+        }
+      }
+
+      function isFaceAtRest() {
+        return Math.abs(faceOffsetY) < CFG.faceRestThreshold && !faceSpringActive;
+      }
+
+      function isFaceScrolling() {
+        return Math.abs(spinVelocity) > CFG.velocityDeadZone || faceSpringActive;
+      }
+
+      function reset() {
+        spinVelocity = 0;
+        globeAngleY = 0;
+        faceOffsetY = 0;
+        faceSpringActive = false;
+        consecutiveStillFrames = 0;
+        lastScrollTime = 0;
+        if (faceSpringTimer) { clearTimeout(faceSpringTimer); faceSpringTimer = null; }
+      }
+
+      return {
+        get spinVelocity() { return spinVelocity; },
+        get globeAngleY() { return globeAngleY; },
+        get faceOffsetY() { return faceOffsetY; },
+        get faceSpringActive() { return faceSpringActive; },
+        get enabled() { return enabled; },
+        CFG,
+        handleWheel, handleTouchStart, handleTouchMove, handleTouchEnd,
+        update, isFaceAtRest, isFaceScrolling, reset,
+      };
+    })();
 
     // --- Wave 1: Deformation weights (precomputed) ---
     let jawWeights = null;
@@ -285,8 +502,8 @@
 
     // Point cloud
     const icoDotMat = new THREE.PointsMaterial({
-      size: 0.045, color: 0x00d4ff,
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.8,
+      size: 0.035, color: 0x00d4ff,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.55,
     });
     const icoCloud = new THREE.Points(icoGeo, icoDotMat);
 
@@ -309,7 +526,7 @@
       return edges;
     }
     const nnEdges = nearestNeighborEdges(icoPoints, 6);
-    const nnIndices = [];
+    nnIndices = [];
     for (const [a, b] of nnEdges) nnIndices.push(a, b);
 
     const icoGroup = new THREE.Group();
@@ -319,13 +536,24 @@
     icoEdgeGeo.setAttribute('position', icoGeo.attributes.position);
     icoEdgeGeo.setIndex(nnIndices);
     icoEdgeGeo.setDrawRange(0, nnIndices.length);
-    const icoEdgeMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.25 });
+    const icoEdgeMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.28 });
     const icoEdges = new THREE.LineSegments(icoEdgeGeo, icoEdgeMat);
     icoGroup.add(icoEdges);
 
-    const icoEdgeGlowMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.08, depthTest: false, depthWrite: false });
-    const icoEdgeGlow = new THREE.LineSegments(icoEdgeGeo.clone(), icoEdgeGlowMat);
+    const icoEdgeGlowMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0.10, depthTest: false, depthWrite: false });
+    const icoEdgeGlowGeom = new THREE.BufferGeometry();
+    icoEdgeGlowGeom.setAttribute('position', icoGeo.attributes.position);
+    icoEdgeGlowGeom.setIndex([...nnIndices]);
+    icoEdgeGlowGeom.setDrawRange(0, nnIndices.length);
+    const icoEdgeGlow = new THREE.LineSegments(icoEdgeGlowGeom, icoEdgeGlowMat);
     icoGroup.add(icoEdgeGlow);
+
+    function setWireframeEdgeIndices(indices) {
+      icoEdgeGeo.setIndex(indices);
+      icoEdgeGeo.setDrawRange(0, indices.length);
+      icoEdgeGlow.geometry.setIndex(indices);
+      icoEdgeGlow.geometry.setDrawRange(0, indices.length);
+    }
 
     icoGroup.add(icoCloud);
     scene.add(icoGroup);
@@ -342,7 +570,6 @@
 
     let faceContourLines = null;
     let faceContourGlow = null;
-    let faceNeighborLines = null;
     let faceMouthCavity = null;
     let faceKeyNodes = [];
     let faceIrisNodes = [];
@@ -369,19 +596,6 @@
       const gMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
       faceContourGlow = new THREE.LineSegments(fGeo.clone(), gMat);
       icoGroup.add(faceContourGlow);
-
-      const nn = nearestNeighborEdges(lms, 5);
-      const ni = [];
-      for (const [a, b] of nn) ni.push(a, b);
-      const nGeo = new THREE.BufferGeometry();
-      const nPos = new Float32Array(NUM * 3);
-      nPos.set(fp);
-      nGeo.setAttribute('position', new THREE.BufferAttribute(nPos, 3));
-      nGeo.setIndex(ni);
-      nGeo.setDrawRange(0, ni.length);
-      const nMat = new THREE.LineBasicMaterial({ color: 0x00d4ff, transparent: true, opacity: 0, depthTest: false });
-      faceNeighborLines = new THREE.LineSegments(nGeo, nMat);
-      icoGroup.add(faceNeighborLines);
 
       // Mouth cavity
       const cavityTris = []; const mIdx = [...MOUTH_INNER, ...MOUTH_OUTER];
@@ -451,11 +665,6 @@
         for (let i = 0; i < NUM * 3; i++) a[i] = src[i];
         faceContourGlow.geometry.attributes.position.needsUpdate = true;
       }
-      if (faceNeighborLines) {
-        const a = faceNeighborLines.geometry.attributes.position.array;
-        for (let i = 0; i < NUM * 3; i++) a[i] = src[i];
-        faceNeighborLines.geometry.attributes.position.needsUpdate = true;
-      }
       if (faceMouthCavity) {
         const a = faceMouthCavity.geometry.attributes.position.array;
         const innerLip = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
@@ -505,6 +714,11 @@
       baseLMs = faceLMs.map(p => ({ ...p }));
       workingBuffer = faceLMs.map(p => ({ ...p }));
 
+      // Compute triangulated NN edges for face (used as wireframe during face mode)
+      const faceNNEdges = nearestNeighborEdges(faceLMs, 6);
+      faceNNIndices = [];
+      for (const [a, b] of faceNNEdges) faceNNIndices.push(a, b);
+
       // Build face wireframe
       const fp = buildFace(faceLMs);
       facePositions.set(fp);
@@ -515,13 +729,14 @@
 
       window.__scene = {
         state, icoGeo, icoCloud, icoDotMat, icoGroup, icoEdges, icoEdgeMat,
-        faceContourLines, faceContourGlow, faceNeighborLines, faceMouthCavity,
+        faceContourLines, faceContourGlow, faceMouthCavity,
         faceKeyNodes, faceIrisNodes,
         faceLMs, baseLMs, workingBuffer, triggerTransform, resetToLanding, scene, camera, renderer,
         icoPoints, positions, NUM, isAnimating: false,
         faceLandmarks3D: faceLMs, seedPositionsArr: positions,
         jawWeights, jawCurveWeight, noseBaseWeight, cheekWeight,
         scanData, behavior: null,
+        faceNNIndices,
       };
     }
 
@@ -549,10 +764,12 @@
       gsap.to('#overlay', { opacity: 0, duration: 0.5 });
 
 
-      // Reset accumulated landing rotation so face aligns with world
+      // Reset accumulated rotation so face aligns with world
       icoGroup.rotation.set(0, 0, 0);
+      ScrollController.reset();
 
       const targets = faceLMs;
+      let indicesSwapped = false;
       const morphObj = { progress: 0 };
       gsap.to(morphObj, {
         progress: 1, duration: 2.0, ease: 'power2.inOut',
@@ -569,12 +786,22 @@
           icoEdgeGeo.attributes.position.needsUpdate = true;
           updateFaceGeometry(positions);
 
-          // Crossfade: sphere edges dissolve as face wireframe emerges
-          icoEdgeMat.opacity = 0.25 * (1 - t);
-          icoEdgeGlowMat.opacity = 0.08 * (1 - t);
+          // Crossfade: sphere NN edges fade out → switch indices → face NN edges fade in
+          if (t < 0.5) {
+            const p = t * 2;
+            icoEdgeMat.opacity = 0.28 * (1 - p);
+            icoEdgeGlowMat.opacity = 0.10 * (1 - p);
+          } else {
+            if (faceNNIndices && !indicesSwapped) {
+              setWireframeEdgeIndices(faceNNIndices);
+              indicesSwapped = true;
+            }
+            const p = (t - 0.5) * 2;
+            icoEdgeMat.opacity = 0.35 * p;
+            icoEdgeGlowMat.opacity = 0.12 * p;
+          }
           faceContourLines.material.opacity = 0.75 * t;
           faceContourGlow.material.opacity = 0.18 * t;
-          faceNeighborLines.material.opacity = 0.45 * t;
           faceMouthCavity.material.opacity = 0.55 * t;
           faceKeyNodes.forEach(n => { n.material.opacity = 0.25 * t; });
           faceIrisNodes.forEach(n => {
@@ -590,13 +817,14 @@
           icoGeo.attributes.position.needsUpdate = true;
           icoEdgeGeo.attributes.position.needsUpdate = true;
           updateFaceGeometry(positions);
+          if (faceNNIndices) setWireframeEdgeIndices(faceNNIndices);
+          icoEdgeMat.opacity = 0.35;
+          icoEdgeGlowMat.opacity = 0.12;
         }
       });
 
-      gsap.to(icoDotMat, { size: 0.02, duration: 0.3 });
-
       gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
-      gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => document.getElementById('agent-ui').classList.add('visible') });
+      gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); document.getElementById('shapeRow').classList.add('visible'); } });
       gsap.to('nav', { opacity: 1, duration: 0.6, delay: 2.0, onStart: () => document.querySelector('nav').classList.add('visible') });
 
       gsap.to({}, { delay: 2.5, onComplete: () => { state = 'agent'; isAnimating = false; if (window.__scene) window.__scene.state = state; startBehavior(); } });
@@ -606,6 +834,7 @@
     function resetToLanding() {
       if (state === 'landing' || isAnimating) return;
       isAnimating = true;
+      ScrollController.reset();
       state = 'resetting';
       if (window.__scene) window.__scene.state = state;
 
@@ -618,7 +847,6 @@
       gsap.killTweensOf(icoEdgeMat);
       gsap.killTweensOf(faceContourLines.material);
       gsap.killTweensOf(faceContourGlow.material);
-      gsap.killTweensOf(faceNeighborLines.material);
       gsap.killTweensOf(faceMouthCavity.material);
       faceKeyNodes.forEach(n => gsap.killTweensOf(n.material));
 
@@ -642,12 +870,19 @@
           icoEdgeGeo.attributes.position.needsUpdate = true;
           updateFaceGeometry(positions);
 
-          // Reverse crossfade: face wireframe dissolves as sphere edges return
-          icoEdgeMat.opacity = 0.25 * t;
-          icoEdgeGlowMat.opacity = 0.08 * t;
+          // Reverse crossfade: face NN edges fade out → switch to sphere NN edges → fade in
+          if (t < 0.5) {
+            const p = t * 2;
+            icoEdgeMat.opacity = 0.35 * (1 - p);
+            icoEdgeGlowMat.opacity = 0.12 * (1 - p);
+          } else {
+            if (nnIndices) setWireframeEdgeIndices(nnIndices);
+            const p = (t - 0.5) * 2;
+            icoEdgeMat.opacity = 0.28 * p;
+            icoEdgeGlowMat.opacity = 0.10 * p;
+          }
           faceContourLines.material.opacity = 0.75 * (1 - t);
           faceContourGlow.material.opacity = 0.18 * (1 - t);
-          faceNeighborLines.material.opacity = 0.45 * (1 - t);
           faceMouthCavity.material.opacity = 0.55 * (1 - t);
           faceKeyNodes.forEach(n => { n.material.opacity = 0.25 * (1 - t); });
           faceIrisNodes.forEach(n => {
@@ -663,11 +898,11 @@
           icoGeo.attributes.position.needsUpdate = true;
           icoEdgeGeo.attributes.position.needsUpdate = true;
           updateFaceGeometry(positions);
+          if (nnIndices) setWireframeEdgeIndices(nnIndices);
+          icoEdgeMat.opacity = 0.28;
+          icoEdgeGlowMat.opacity = 0.10;
         }
       });
-
-      // Enlarge dots back
-      gsap.to(icoDotMat, { size: 0.045, duration: 0.3 });
 
       // Restore camera
       gsap.to(camera.position, { z: 6, duration: 1.2, ease: 'power2.inOut' });
@@ -676,12 +911,18 @@
       gsap.to('#overlay', { opacity: 1, duration: 0.4, delay: 0.3 });
 
       // Hide agent UI and nav
-      gsap.to('#agent-ui', { opacity: 0, duration: 0.3, onComplete: () => document.getElementById('agent-ui').classList.remove('visible') });
+      gsap.to('#agent-ui', { opacity: 0, duration: 0.3, onComplete: () => { document.getElementById('agent-ui').classList.remove('visible'); document.getElementById('shapeRow').classList.remove('visible'); } });
       gsap.to('nav', { opacity: 0, duration: 0.3, onComplete: () => document.querySelector('nav').classList.remove('visible') });
 
       // Reset nav active states
       document.getElementById('navHome').classList.add('active');
       document.getElementById('navAgent').classList.remove('active');
+
+      // Reset shape to face
+      shapeTargets = null;
+      shapeTargetEdgeIndices = null;
+      currentShape = 'face';
+      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === 'face'));
 
       gsap.to({}, {
         delay: 1.8,
@@ -706,7 +947,172 @@
 
     // --- Keyboard ---
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') resetToLanding();
+      if (e.key === 'Escape') { resetToLanding(); }
+    });
+
+    // --- Shape morphing engine ---
+    const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus'];
+
+    async function loadShapeGLB(name) {
+      const loader = new GLTFLoader();
+      const gltf = await loader.loadAsync(`/data/shapes/${name}.glb`);
+      const mesh = gltf.scene.children[0];
+      const geo = mesh.geometry;
+      const rawVerts = geo.attributes.position.array;
+      const rawCount = rawVerts.length / 3;
+
+      // Sample shape surface at each Fibonacci direction → 478 morph targets
+      const targets = new Array(NUM);
+      for (let i = 0; i < NUM; i++) {
+        let bestD = Infinity, bestJ = 0;
+        const ip = icoPoints[i];
+        for (let j = 0; j < rawCount; j++) {
+          const dx = ip.x - rawVerts[j * 3];
+          const dy = ip.y - rawVerts[j * 3 + 1];
+          const dz = ip.z - rawVerts[j * 3 + 2];
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < bestD) { bestD = d2; bestJ = j; }
+        }
+        targets[i] = { x: rawVerts[bestJ*3], y: rawVerts[bestJ*3+1], z: rawVerts[bestJ*3+2] };
+      }
+      shapeTargets = targets;
+
+      // Compute nearest-neighbor edges on the sampled 478-point cloud
+      const shapeEdges = nearestNeighborEdges(targets, 6);
+      shapeTargetEdgeIndices = [];
+      for (const [a, b] of shapeEdges) shapeTargetEdgeIndices.push(a, b);
+      return true;
+    }
+
+    function getTargetsForShape(name) {
+      if (name === 'face') return faceLMs;
+      if (name === 'sphere') return icoPoints;
+      return shapeTargets;
+    }
+
+    async function switchShape(name) {
+      if (isAnimating || name === currentShape) return;
+      const prevShape = currentShape;
+      currentShape = name;
+
+      // Update pill active states
+      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === name));
+
+      // Load GLB for solid shapes (not sphere which uses icoPoints, not face which uses faceLMs)
+      if (name !== 'face' && name !== 'sphere' && name !== prevShape) {
+        try { if (!await loadShapeGLB(name)) { currentShape = prevShape; return; } } catch (e) { console.warn('Shape load failed:', e); currentShape = prevShape; return; }
+      }
+
+      const targets = getTargetsForShape(name);
+      if (!targets) { currentShape = prevShape; return; }
+
+      // If landing state, morph from ico to shape/face
+      if (state === 'landing') {
+        if (name === 'face') { triggerTransform(); return; }
+        if (name === 'sphere') return; // Already a sphere
+        // Morph from ico to solid shape
+        gsap.to('#overlay', { opacity: 0, duration: 0.5 });
+        morphToTarget(targets, name, 2.0);
+        gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
+        gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); document.getElementById('shapeRow').classList.add('visible'); } });
+        gsap.to('nav', { opacity: 1, duration: 0.6, delay: 2.0, onStart: () => document.querySelector('nav').classList.add('visible') });
+        return;
+      }
+
+      // In agent/transforming state, morph between current and target
+      morphToTarget(targets, name, 1.5);
+    }
+
+    function morphToTarget(targets, shapeName, duration) {
+      isAnimating = true;
+      const startPos = new Float32Array(positions);
+      const isFace = shapeName === 'face';
+      const isSphere = shapeName === 'sphere';
+      const isShape = !isFace && !isSphere;
+
+      // Determine target edge indices per mode
+      const targetEdgeIndices = isFace ? faceNNIndices : (isSphere ? nnIndices : shapeTargetEdgeIndices);
+
+      // Snapshot current opacities
+      const fcOp = faceContourLines ? faceContourLines.material.opacity : 0;
+      const fgOp = faceContourGlow ? faceContourGlow.material.opacity : 0;
+      const fmOp = faceMouthCavity ? faceMouthCavity.material.opacity : 0;
+      const knOps = faceKeyNodes.map(n => n.material.opacity);
+      const irOps = faceIrisNodes.map(n => n.material.opacity);
+      const ieOp = icoEdgeMat.opacity;
+      const igOp = icoEdgeGlowMat.opacity;
+
+      // Target opacities — unified wireframe-only scheme per PLAN.md
+      const tFcOp = isFace ? 0.75 : 0;
+      const tFgOp = isFace ? 0.18 : 0;
+      const tFmOp = isFace ? 0.55 : 0;
+      const tKnOp = isFace ? 0.25 : 0;
+      const tIeOp = isFace ? 0.35 : (isSphere ? 0.28 : 0.22);
+      const tIgOp = isFace ? 0.12 : (isSphere ? 0.10 : 0.08);
+
+      let indicesSwapped = false;
+
+      const morphObj = { progress: 0 };
+      gsap.to(morphObj, {
+        progress: 1, duration, ease: 'power2.inOut',
+        onUpdate: () => {
+          const t = easeInOutCubic(morphObj.progress);
+          for (let i = 0; i < NUM; i++) {
+            positions[i*3]     = startPos[i*3]     + (targets[i].x - startPos[i*3])     * t;
+            positions[i*3 + 1] = startPos[i*3 + 1] + (targets[i].y - startPos[i*3 + 1]) * t;
+            positions[i*3 + 2] = startPos[i*3 + 2] + (targets[i].z - startPos[i*3 + 2]) * t;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          if (isFace && t > 0) updateFaceGeometry(positions);
+
+          // Swap edge indices at midpoint
+          if (t >= 0.5 && !indicesSwapped && targetEdgeIndices) {
+            setWireframeEdgeIndices(targetEdgeIndices);
+            indicesSwapped = true;
+          }
+
+          // Crossfade face contour elements
+          if (faceContourLines) faceContourLines.material.opacity = fcOp + (tFcOp - fcOp) * t;
+          if (faceContourGlow) faceContourGlow.material.opacity = fgOp + (tFgOp - fgOp) * t;
+          if (faceMouthCavity) faceMouthCavity.material.opacity = fmOp + (tFmOp - fmOp) * t;
+          faceKeyNodes.forEach((n, i) => { n.material.opacity = knOps[i] + (tKnOp - knOps[i]) * t; });
+          faceIrisNodes.forEach((n, i) => { const to = isFace ? (n.geometry.parameters?.radius > 0.03 ? 0.15 : 1) : 0; n.material.opacity = irOps[i] + (to - irOps[i]) * t; });
+
+          // Crossfade unified edges
+          icoEdgeMat.opacity = ieOp + (tIeOp - ieOp) * t;
+          icoEdgeGlowMat.opacity = igOp + (tIgOp - igOp) * t;
+        },
+        onComplete: () => {
+          for (let i = 0; i < NUM; i++) {
+            positions[i*3]     = targets[i].x;
+            positions[i*3+1]   = targets[i].y;
+            positions[i*3+2]   = targets[i].z;
+          }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          if (isFace) updateFaceGeometry(positions);
+
+          if (!indicesSwapped && targetEdgeIndices) setWireframeEdgeIndices(targetEdgeIndices);
+
+          if (faceContourLines) faceContourLines.material.opacity = tFcOp;
+          if (faceContourGlow) faceContourGlow.material.opacity = tFgOp;
+          if (faceMouthCavity) faceMouthCavity.material.opacity = tFmOp;
+          faceKeyNodes.forEach(n => { n.material.opacity = tKnOp; });
+          faceIrisNodes.forEach(n => { n.material.opacity = 0; });
+          icoEdgeMat.opacity = tIeOp;
+          icoEdgeGlowMat.opacity = tIgOp;
+
+          isAnimating = false;
+          if (isShape && shapeName !== 'face') state = 'agent';
+          if (window.__scene) window.__scene.state = state;
+        }
+      });
+    }
+
+    // --- Shape pill click handlers ---
+    document.querySelectorAll('.shape-pill').forEach(pill => {
+      pill.addEventListener('click', () => switchShape(pill.dataset.shape));
     });
 
     // --- FPS monitor + render loop ---
@@ -727,27 +1133,31 @@
       const dt = Math.min((time - lastRAFTime) / 1000 || 0.016, 0.05);
       lastRAFTime = time;
 
-      // --- Landing rotation ---
+      // --- Scroll-driven rotation ---
+      ScrollController.update(dt);
+
       if (state === 'landing') {
-        icoGroup.rotation.x += 0.003;
-        icoGroup.rotation.y += 0.005;
-        icoGroup.rotation.z += 0.001;
+        icoGroup.rotation.x += ScrollController.CFG.globeSpeedX;
+        icoGroup.rotation.y = ScrollController.globeAngleY;
+        icoGroup.rotation.z += ScrollController.CFG.globeSpeedZ;
       }
 
       // --- Agent mode animation ---
       if (state === 'agent' && window.__scene?.behavior && workingBuffer && baseLMs) {
+        const isFaceMode = currentShape === 'face' || currentShape === 'sphere';
         const b = window.__scene.behavior.update(dt);
         const t = time / 1000;
 
-        // Reset to base
-        for (let i = 0; i < NUM; i++) {
-          workingBuffer[i].x = baseLMs[i].x;
-          workingBuffer[i].y = baseLMs[i].y;
-          workingBuffer[i].z = baseLMs[i].z;
-        }
+        if (isFaceMode) {
+          // Reset to base
+          for (let i = 0; i < NUM; i++) {
+            workingBuffer[i].x = baseLMs[i].x;
+            workingBuffer[i].y = baseLMs[i].y;
+            workingBuffer[i].z = baseLMs[i].z;
+          }
 
-        // Priority: VisemeEngine > EmotionState > idle behavior
-        if (VisemeEngine.talking) {
+          // Priority: VisemeEngine > EmotionState > idle behavior
+          if (VisemeEngine.talking) {
           VisemeEngine.update(dt);
         } else if (EmotionState.target !== 'neutral' && EmotionState.blend < 1) {
           EmotionState.update(dt);
@@ -774,32 +1184,46 @@
         if (workingBuffer[468]) { workingBuffer[468].x = iris.left.x; workingBuffer[468].y = iris.left.y; workingBuffer[468].z = iris.left.z; }
         if (workingBuffer[473]) { workingBuffer[473].x = iris.right.x; workingBuffer[473].y = iris.right.y; workingBuffer[473].z = iris.right.z; }
 
-        const buf = new Float32Array(NUM * 3);
         for (let i = 0; i < NUM; i++) {
-          buf[i * 3] = workingBuffer[i].x;
-          buf[i * 3 + 1] = workingBuffer[i].y;
-          buf[i * 3 + 2] = workingBuffer[i].z;
+          positions[i * 3] = workingBuffer[i].x;
+          positions[i * 3 + 1] = workingBuffer[i].y;
+          positions[i * 3 + 2] = workingBuffer[i].z;
         }
         icoGeo.attributes.position.needsUpdate = true;
         icoEdgeGeo.attributes.position.needsUpdate = true;
-        updateFaceGeometry(buf);
+        icoEdgeGlow.geometry.attributes.position.needsUpdate = true;
+        updateFaceGeometry(positions);
 
         // --- Contour glow pulse (F5) ---
         if (faceContourGlow) {
           faceContourGlow.material.opacity = 0.18 + Math.sin(t * 2.5) * 0.04;
         }
+        } // end isFaceMode
 
-        // --- Head group animation (F11/F15) ---
+        // --- Head group animation (F11/F15) — scroll-aware ---
+        const scrollY = ScrollController.faceOffsetY;
+        const scrolling = ScrollController.isFaceScrolling();
+        const atRest = ScrollController.isFaceAtRest();
+
         const headMotion = HeadMotion.update(dt);
         if (headMotion && icoGroup) {
-          icoGroup.rotation.y += (headMotion.yaw * 0.5 - icoGroup.rotation.y) * Math.min(1, dt * 2.5);
+          const headYaw = headMotion.yaw * 0.5;
+          icoGroup.rotation.y = scrollY + headYaw;
           icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
           icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
         } else if (icoGroup && state === 'agent') {
-          const swayAmp = 0.6;
-          const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
-          icoGroup.rotation.y += (sway - icoGroup.rotation.y) * Math.min(1, dt * 2);
-          icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
+          if (atRest) {
+            const swayAmp = 0.6;
+            const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
+            icoGroup.rotation.y = sway;
+            icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
+          } else if (scrolling) {
+            icoGroup.rotation.y = scrollY;
+            icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+          } else {
+            icoGroup.rotation.y = scrollY;
+            icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+          }
         }
         // Vertical breathing bob
         if (icoGroup) icoGroup.position.y = 0.01 * Math.sin(t * 1.3 + 0.6) * 0.6;
@@ -807,6 +1231,42 @@
       renderer.render(scene, camera);
     }
     requestAnimationFrame(animate);
+
+    // ═══ Scroll & Touch Listeners ═══
+    window.addEventListener('wheel', (e) => {
+      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        e.preventDefault();
+        ScrollController.handleWheel(e);
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchstart', (e) => {
+      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        ScrollController.handleTouchStart(e);
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        ScrollController.handleTouchMove(e);
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchend', (e) => {
+      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        ScrollController.handleTouchEnd(e);
+      }
+    }, { passive: false });
+
+    window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', (e) => {
+      if (e.matches) {
+        ScrollController.reset();
+      }
+    });
 
     // --- Raycasting ---
     const raycaster = new THREE.Raycaster();
@@ -972,6 +1432,18 @@
 
       update(dt) {
         if (!this.talking || dt <= 0 || isNaN(dt)) return;
+
+        // Blend live audio intensity into viseme — compensates for fixed-plan drift
+        let audioBoost = 0;
+        if (analyser) {
+          const freqData = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(freqData);
+          let sum = 0;
+          for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+          const avg = sum / freqData.length / 255;
+          audioBoost = avg > 0.02 ? avg * 1.5 : 0;
+        }
+
         this.elapsed += dt;
         while (this.planCursor < this.plan.length && this.elapsed >= this.plan[this.planCursor].startTime + this.plan[this.planCursor].duration) {
           this.planCursor++;
@@ -1002,7 +1474,7 @@
           else if (nv === 'O') { jaw = jaw * (1-blend) + 0.3 * blend; funnel = funnel * (1-blend) + 0.2 * blend; }
         }
 
-        jaw = Math.min(0.5, jaw * intensity);
+        jaw = Math.min(0.5, jaw * intensity + audioBoost * 0.3);
         smileVal = Math.min(0.5, smileVal * intensity);
         pucker = Math.min(0.4, pucker * intensity);
         funnel = Math.min(0.4, funnel * intensity);
@@ -1148,28 +1620,90 @@
       });
     }
 
-    // --- Chat history (Wave 4) ---
-    const chatHistory = [];
+    // --- Chat history (Wave 4) — persisted to localStorage ---
+    let chatHistory = JSON.parse(localStorage.getItem('dassein_history') || '[]');
+    let abortController = null;
 
-    // --- Wave 4: ask function (chat → viseme → speak) ---
+    function addMessage(role, text) {
+      const div = document.createElement('div');
+      div.className = 'msg-line ' + role;
+      div.textContent = text;
+      convoEl.appendChild(div);
+      convoEl.scrollTop = convoEl.scrollHeight;
+    }
+
+    // --- Wave 4: ask function (streaming chat → viseme → speak) ---
     async function ask(text) {
       if (!text.trim()) return;
-      convoEl.textContent = '...';
+      speechSynthesis.cancel();
+      VisemeEngine.talking = false;
+      if (abortController) abortController.abort();
+      abortController = new AbortController();
+
       unlockSpeech();
+      addMessage('user', text);
+
+      const replyDiv = document.createElement('div');
+      replyDiv.className = 'msg-line assistant streaming';
+      convoEl.appendChild(replyDiv);
+      let fullReply = '';
+
       try {
-        const r = await fetch('/api/chat', {
+        const r = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text, history: chatHistory.slice(-10) }),
+          signal: abortController.signal,
         });
-        const data = await r.json();
-        const reply = data.response || data.reply || '...';
-        convoEl.textContent = reply;
-        chatHistory.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
-        VisemeEngine.buildSyllablePlan(reply);
-        await say(reply);
-      } catch {
-        convoEl.textContent = 'Could not reach the agent. Is the server running?';
+
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let startedSpeaking = false;
+
+        outerLoop:
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') { fullReply += ''; break outerLoop; }
+            try {
+              const { token } = JSON.parse(data);
+              fullReply += token;
+              replyDiv.textContent = fullReply;
+              convoEl.scrollTop = convoEl.scrollHeight;
+
+              if (!startedSpeaking && fullReply.length > 20) {
+                startedSpeaking = true;
+                VisemeEngine.buildSyllablePlan(fullReply);
+                VisemeEngine.talking = true;
+                say(fullReply).then(() => { replyDiv.classList.remove('streaming'); });
+              }
+            } catch {}
+          }
+        }
+
+        if (!startedSpeaking && fullReply) {
+          VisemeEngine.buildSyllablePlan(fullReply);
+          VisemeEngine.talking = true;
+          await say(fullReply);
+        }
+
+        replyDiv.classList.remove('streaming');
+        chatHistory.push({ role: 'user', content: text }, { role: 'assistant', content: fullReply });
+        try { localStorage.setItem('dassein_history', JSON.stringify(chatHistory.slice(-50))); } catch (_) {}
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        replyDiv.textContent = 'Could not reach the agent. Is the server running?';
+        replyDiv.classList.remove('streaming');
+      } finally {
+        abortController = null;
       }
     }
 
@@ -1278,11 +1812,17 @@
         setContState('cont-active');
         const blob = await blobP;
         const text = await transcribeRecording(blob);
-        if (text.trim()) {
-          chatInput.value = text;
-          await ask(text);
-          chatInput.value = '';
+        if (!text || text.startsWith('Transcribed') || text === '(Transcription failed)') {
+          if (continuousMode && !contAbort) {
+            setTimeout(() => conversationStep(), 300);
+          } else {
+            contLoopActive = false;
+          }
+          return;
         }
+        chatInput.value = text;
+        await ask(text);
+        chatInput.value = '';
         if (continuousMode && !contAbort) {
           setTimeout(() => conversationStep(), 300);
         } else {
@@ -1330,6 +1870,14 @@
     const sendBtn = document.getElementById('sendBtn');
     const micBtn = document.getElementById('micBtn');
     const convoEl = document.getElementById('convo');
+
+    // Restore history UI on load
+    for (const m of chatHistory.slice(-20)) {
+      const div = document.createElement('div');
+      div.className = 'msg-line ' + m.role;
+      div.textContent = m.content;
+      convoEl.appendChild(div);
+    }
 
     sendBtn.addEventListener('click', () => { ask(chatInput.value); chatInput.value = ''; });
     chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { ask(chatInput.value); chatInput.value = ''; } });
