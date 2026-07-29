@@ -1,594 +1,663 @@
-# Dassein — Scroll-Driven Rotation + Face Auto-Correction Plan
+# Dassein — GLB Morph Engine Plan
 
 ## Goal
 
-Replace the hardcoded autonomous tumble with scroll-driven rotation:
-1. **Landing state (globe/icosahedron):** Slow continuous auto-rotate. User scroll (horizontal) adds spin velocity with inertial decay. Globe never stops — it always rotates, user input just adds energy.
-2. **Agent state (face):** No auto-rotate. Face faces forward by default. User scroll rotates it temporarily. After 1.5s of no input, it springs back to center using two-zone correction (quick glances snap back fast; deliberate look-aways return slowly).
-3. **All rendered objects** share the same `icoGroup` rotation, so the mechanic works on the globe, the face, and any future geometry.
-4. **Horizontal scroll** maps to left/right Y-axis rotation. Trackpad swipe, shift+scroll, and regular mouse wheel all work.
-
-## Gap Analysis (issues found and fixed)
-
-| # | Gap | Fix |
-|---|-----|-----|
-| 1 | Body `overflow:hidden` means no native scrollbar. Wheel events work but `preventDefault` must not conflict. | Use `{passive: false}` on wheel listener. Call `preventDefault()` only on the canvas element, not window. |
-| 2 | Regular mice have no horizontal scroll — only vertical wheel. | Fallback: if `deltaX === 0` and no shift key, map `deltaY` to rotation. Shift+scroll also works. |
-| 3 | Touch events could conflict with the click-to-transform raycaster. | Differentiate tap (< 5px movement, < 300ms) from swipe (> 5px movement). Only rotate on swipe. Tap still triggers transform. |
-| 4 | During the 2-second GSAP transform animation, scroll input would fight the morph. | Disable scroll input when `isAnimating === true`. Buffer is unnecessary — just ignore. |
-| 5 | Damping `0.92^60 ≈ 0.007` after 1 second — too fast, rotation feels dead. | Use `0.96` damping (half-life ~0.9s). Velocity halves every 17 frames at 60fps. After 3s, velocity is 0.96^180 ≈ 0.0006 — essentially gone. |
-| 6 | No `prefers-reduced-motion` check. | Add check: if user prefers reduced motion, disable scroll rotation entirely. Globe still auto-rotates at 10% speed. |
-| 7 | `scrollend` event not universally supported for wheel-based scrolling. | Use velocity dead-zone: when `abs(spinVelocity) < 0.0005` for 3 consecutive frames, treat as "scroll stopped". |
-| 8 | Vertical scroll could zoom the camera, but this is a nice-to-have that adds complexity. | Defer zoom to a future phase. For now, all scroll input (horizontal and vertical) maps to Y rotation. |
-| 9 | Face sway (breathing) at lines 798-803 fights with scroll rotation. | When `faceScrollActive || faceSpringActive`, suppress breathing sway. Resume sway only when face is at rest (offset < 0.002). |
-| 10 | Camera Z position is currently animated by GSAP (z: 4.5 in agent, z: 6 in landing). Scroll zoom would conflict. | Don't modify camera Z with scroll for now. GSAP camera animations in transform remain un-touched. |
-| 11 | Reset to landing (Escape key, nav click) should also reset scroll state. | `resetToLanding()` calls `scrollController.reset()`. |
-| 12 | Frame-rate independence: `dt` varies. Damping formula must be independent of frame rate. | Use `Math.pow(damping, dt * 60)` pattern — same decay feel at 30fps, 60fps, or 120fps. |
-| 13 | Safari 30fps Low Power Mode cap — damping still works correctly due to frame-rate-independent formula. | No special Safari code needed. The `dt * 60` normalization handles it. |
-| 14 | Multiple simultaneous inputs (trackpad + touch). | Track velocity per input source. Use a single `spinVelocity` accumulator — whereever the delta comes from, it adds to the same variable. |
-| 15 | Face iris positions relative to rotated group. | Iris nodes are children of icoGroup — they rotate with it. No change needed. |
-| 16 | Edge wireframe and point cloud are both children of `icoGroup` — they rotate together naturally. | No change needed. |
-
-## File to Modify
-
-**Single file:** `index.html` — all changes are within the existing `<script type="module">` block (lines 155-1384). No new files. No new dependencies.
+Build an engine that can transform the icosahedron/face into **any 3D GLB model** using the same vertex-morph pipeline — dots + wireframe lines dissolving from one shape to another. Once this works, the face is just one target among many, and the agent can morph to represent concepts in 3D.
 
 ---
 
-## Implementation Steps
+## Part 1: How the Current Morph System Works
 
-### Step 1: Add `prefers-reduced-motion` check (insert after line 156)
+### 1.1 The Vertex Buffer (the core)
 
-Location: After `import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';` (line 157), before `const NUM = 478;` (line 159).
+Everything depends on a single shared `Float32Array` of `NUM × 3` floats (478 vertices × xyz):
 
-Insert:
-```javascript
-const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+```
+positions = [x0, y0, z0,  x1, y1, z1,  ...  x477, y477, z477]
 ```
 
----
+This array lives inside `icoGeo.attributes.position`. Multiple renderers read from it:
 
-### Step 2: Insert ScrollController module (insert after line 186, before `let scanData = null;`)
+| Object | Type | How it reads |
+|--------|------|-------------|
+| `icoCloud` | `THREE.Points` | Reads `icoGeo` directly as point positions |
+| `icoEdges` | `THREE.LineSegments` | Shares `icoGeo.attributes.position` by reference — same buffer, uses indices to draw lines between neighbors |
+| `icoEdgeGlow` | `THREE.LineSegments` | Clone of edge geometry — separate buffer that gets updated in sync |
 
-Location: After `let state = 'landing';` (line 186), before `// --- Wave 1: Deformation weights` (line 188).
+The key trick: `icoEdges` and `icoCloud` share the **same** `icoGeo.attributes.position`. When you update that array and set `needsUpdate = true`, both the dots and the wireframe move together.
 
-Insert the full ScrollController:
+### 1.2 The Icosahedron (source shape)
+
+478 points on a unit sphere using a Fibonacci lattice (`fibonacciSphere(478)`):
+
+```
+icoPoints[i] = { x, y, z }   // on unit sphere surface
+```
+
+Neighbor edges connect each point to its 6 nearest neighbors in 3D space (`nearestNeighborEdges(icoPoints, 6)`). These edges form the wireframe that wraps around the dot cloud.
+
+### 1.3 The Face (target shape)
+
+478 landmark points loaded from `data/robota_scan.json`, scaled:
+
+```
+faceLMs[i] = {
+  x: raw.x * FACE_SCALE,
+  y: -raw.y * FACE_SCALE_Y,   // Y flipped from scan coordinate system
+  z: raw.z * FACE_SCALE_Z,
+}
+```
+
+Face-specific features (contour lines, mouth cavity, iris spheres, key nodes) have their own geometries that also hold 478 vertices. They get updated each frame via `updateFaceGeometry(src)` which copies the 478 positions into each sub-geometry's position buffer.
+
+### 1.4 The Morph Interpolation
+
+`triggerTransform()` (line 732) does this each frame during the 2-second GSAP animation:
 
 ```javascript
-    // ═══ Scroll-Driven Rotation Controller ═══
-    const ScrollController = (() => {
-      // ── Configuration ──
-      const CFG = {
-        // Globe auto-rotate speeds (radians per frame at 60fps)
-        globeSpeedX: 0.0008,    // was 0.003 — 3.75x slower
-        globeSpeedY: 0.0015,    // was 0.005 — 3.3x slower
-        globeSpeedZ: 0.0003,    // was 0.001 — 3.3x slower
+positions[i*3]     = icoPoints[i].x + (faceLMs[i].x - icoPoints[i].x) * t;
+positions[i*3 + 1] = icoPoints[i].y + (faceLMs[i].y - icoPoints[i].y) * t;
+positions[i*3 + 2] = icoPoints[i].z + (faceLMs[i].z - icoPoints[i].z) * t;
+```
 
-        // Reduced-motion overrides (10% of normal)
-        reducedGlobeSpeedX: 0.00008,
-        reducedGlobeSpeedY: 0.00015,
-        reducedGlobeSpeedZ: 0.00003,
+### 1.5 What Makes a Valid Target
 
-        // Scroll sensitivity
-        scrollFactor: 0.004,       // delta → spinVelocity multiplier
-        fallbackMouseFactor: 0.003, // slightly less sensitive for regular mouse wheel fallback
+Any target needs exactly **three things**:
 
-        // Inertia damping per frame at 60fps (higher = longer glide)
-        // 0.96 → half-life ~0.9s → velocity halves every 17 frames
-        damping: 0.96,
+1. **N points** with x,y,z positions (same count as source — 478)
+2. **N×3 Float32Array** of those positions, same format as `icoGeo.attributes.position.array`
+3. **Edge indices** — pairs of vertex indices defining the wireframe lines (can reuse nearest-neighbor edges)
 
-        // Velocity clamps
-        maxSpinVelocity: 2.5,      // rad/sec cap (~143°/sec)
-        velocityDeadZone: 0.0005,  // below this, treated as stopped
+That's it. If you provide those three, the morph pipeline works identically for **any** 3D shape.
 
-        // Face spring-back
-        faceIdleDelay: 1500,       // ms before spring-back starts
-        faceSpringFast: 0.06,      // lerp rate for small angles (< threshold)
-        faceSpringSlow: 0.02,      // lerp rate for large angles (≥ threshold)
-        faceZoneThreshold: 0.35,   // radians (~20°) — boundary between fast/slow spring
-        faceSnapThreshold: 0.001,  // snap to 0 when this close
-        faceRestThreshold: 0.002,  // below this, face is "at rest" (sway resumes)
+---
 
-        // Touch gesture detection
-        tapMaxMovement: 5,         // px — less than this = tap, not swipe
-        tapMaxDuration: 300,       // ms — shorter than this = tap
-      };
+## Part 2: Approaches for GLB → 478 Points + Edges
 
-      // ── State ──
-      let spinVelocity = 0;          // current rotational velocity from user input
-      let globeAngleY = 0;          // accumulated Y rotation in globe mode
-      let faceOffsetY = 0;          // user-driven Y rotation in face mode
-      let faceSpringActive = false;
-      let faceSpringTimer = null;
-      let lastScrollTime = 0;
-      let consecutiveStillFrames = 0;
-      let enabled = !REDUCED_MOTION;  // disabled entirely for reduced-motion users
+A GLB file can contain thousands of vertices across multiple meshes. We need to reduce any GLB to exactly 478 surface points with neighbor edges.
 
-      // Touch state
-      let touchStartX = 0;
-      let touchStartY = 0;
-      let touchStartTime = 0;
-      let touchActive = false;
-      let touchPrevX = 0;
+### Approach A: Uniform Triangle-Area-Weighted Sampling (RECOMMENDED)
 
-      function handleWheel(e) {
-        if (!enabled) return;
-        if (typeof isAnimating !== 'undefined' && isAnimating) return;
-        if (REDUCED_MOTION) return;
+**Process:**
+1. Load GLB with `GLTFLoader`
+2. Walk the scene graph, find all `THREE.Mesh` nodes
+3. For each mesh, extract all triangles in world space:
+   - If geometry has `index`: read triangle triples from the index buffer
+   - If geometry has no index: use sequential vertices (0,1,2, 3,4,5, ...)
+   - Apply the mesh's world matrix to each vertex
+4. Compute the area of every triangle
+5. Build a cumulative area array: `cumArea[i] = sum of areas of first i triangles`
+6. Generate N random numbers in `[0, totalArea]`
+7. For each random number, find the triangle it falls in (binary search on cumArea)
+8. Generate barycentric coordinates `(u, v)` via `u = sqrt(r1), v = r2 * (1-u)` where r1,r2 are random in [0,1]
+9. Compute the sample point: `P = A*(1-u-v) + B*u + C*v` where A,B,C are triangle vertices
+10. Normalize all points to fit within a unit sphere (same scale as icoPoints)
+11. Build k-NN edges using the existing `nearestNeighborEdges(points, 6)` function
 
-        e.preventDefault();
+**Why this is best:**
+- Works with any GLB regardless of vertex count, topology, or mesh count
+- Uniform distribution prevents clustering on dense mesh regions
+- Uses only existing Three.js APIs — no external dependencies
+- Runs entirely in the browser: ~30ms for 10K triangles, ~100ms for 100K triangles
+- Reuses the existing k-NN edge builder
+- Produces visually clean dot clouds that look like the model's silhouette
 
-        let delta = 0;
-        let isTrackpad = false;
+**Tradeoffs:**
+- 478 points is low — fine details (< 2% of model surface area) may not be captured
+- No awareness of model features (sharp edges, holes) — everything is uniform
+- Triangle extraction from non-indexed geometries produces duplicate vertices (waste)
 
-        // Detect trackpad: pixel-level deltas, or very small line/page deltas
-        if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-          isTrackpad = true;
-          delta = e.deltaX;
-          // If no horizontal delta, use shift+vertical as horizontal
-          if (Math.abs(delta) < 0.01 && e.shiftKey) {
-            delta = e.deltaY;
-          }
-          // Fallback: if still no horizontal, use vertical (mouse wheel with no shift)
-          if (Math.abs(delta) < 0.01) {
-            delta = e.deltaY;
-            isTrackpad = false;
-          }
-        } else {
-          // Line or page scroll — likely a mouse wheel
-          delta = e.deltaX;
-          if (Math.abs(delta) < 0.01 && e.shiftKey) {
-            delta = e.deltaY;
-          }
-          if (Math.abs(delta) < 0.01) {
-            delta = e.deltaY;
-          }
-        }
+### Approach B: Vertex Decimation
 
-        const factor = isTrackpad ? CFG.scrollFactor : CFG.fallbackMouseFactor;
-        const addition = Math.sign(delta) * Math.min(Math.abs(delta) * factor, 0.15);
+- Merge all meshes, use a mesh simplification algorithm to reduce to ~500 vertices
+- Use those vertices directly instead of sampling
+- **Tradeoffs:** Complex algorithm, poor results on non-watertight meshes, slow
 
-        spinVelocity += addition;
-        spinVelocity = Math.max(-CFG.maxSpinVelocity, Math.min(CFG.maxSpinVelocity, spinVelocity));
+### Approach C: Feature-Aware Sampling
 
-        lastScrollTime = performance.now();
-        consecutiveStillFrames = 0;
+- Same as A, but add extra density near high-curvature regions (sharp edges)
+- Compute dihedral angles between adjacent triangles
+- Weight sampling toward sharp edges
+- **Tradeoffs:** Better visual detail but 2× complexity, needs adjacency graph
 
-        // Cancel face spring-back on new input
-        if (faceSpringActive) {
-          faceSpringActive = false;
-        }
-        if (faceSpringTimer) {
-          clearTimeout(faceSpringTimer);
-          faceSpringTimer = null;
-        }
-      }
+### Approach D: Voxel Grid
 
-      function handleTouchStart(e) {
-        if (!enabled) return;
-        if (typeof isAnimating !== 'undefined' && isAnimating) return;
-        if (REDUCED_MOTION) return;
-        if (e.touches.length !== 1) return; // ignore multi-touch
+- Voxelize the model at resolution that gives ~500 occupied voxels
+- Place a vertex at each occupied voxel center
+- **Tradeoffs:** Works for any geometry but looks blocky/quantized
 
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-        touchPrevX = touchStartX;
-        touchStartTime = performance.now();
-        touchActive = true;
+### Recommendation: Start with Approach A
 
-        e.preventDefault();
-      }
+It's the simplest, fastest, and produces good-looking results. Approaches C and D can be added later as quality upgrades without changing the API.
 
-      function handleTouchMove(e) {
-        if (!touchActive) return;
-        e.preventDefault();
+---
 
-        const x = e.touches[0].clientX;
-        const dx = x - touchPrevX;
-        touchPrevX = x;
+## Part 3: Implementation Plan
 
-        if (Math.abs(dx) > 0.5) {
-          spinVelocity += dx * 0.004;
-          spinVelocity = Math.max(-CFG.maxSpinVelocity, Math.min(CFG.maxSpinVelocity, spinVelocity));
-          lastScrollTime = performance.now();
-          consecutiveStillFrames = 0;
+### Step 1: Import GLTFLoader (line 179-181)
 
-          if (faceSpringActive) faceSpringActive = false;
-          if (faceSpringTimer) { clearTimeout(faceSpringTimer); faceSpringTimer = null; }
-        }
-      }
+Change the import section:
 
-      function handleTouchEnd(e) {
-        if (!touchActive) return;
-        touchActive = false;
+```javascript
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+```
 
-        const totalDx = (e.changedTouches[0]?.clientX || touchPrevX) - touchStartX;
-        const totalDy = (e.changedTouches[0]?.clientY || touchStartY) - touchStartY;
-        const duration = performance.now() - touchStartTime;
-        const distance = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
+### Step 2: Build the GLBMorphEngine module (insert after line 376, after ScrollController)
 
-        // If it was a tap (short, small movement), don't consume — let click handler fire
-        if (distance < CFG.tapMaxMovement && duration < CFG.tapMaxDuration) {
-          touchActive = false;
-          return;
-        }
+Insert a new module:
 
-        // Otherwise, prevent the click that would follow
-        e.preventDefault();
-      }
+```javascript
+    // ═══ GLB Morph Engine ═══
+    const GLBMorphEngine = (() => {
+      const loader = new GLTFLoader();
 
-      function update(dt) {
-        if (REDUCED_MOTION) {
-          // Reduced motion: only slow auto-rotate, no scroll input
-          globeAngleY += CFG.reducedGlobeSpeedY * dt * 60;
-          return;
-        }
+      /**
+       * Extract all triangles from a GLB scene graph in world space.
+       * Returns an array of triangle objects: { a: vec3, b: vec3, c: vec3, area: float }
+       */
+      function extractTriangles(gltf) {
+        const triangles = [];
 
-        // ── Damping ──
-        spinVelocity *= Math.pow(CFG.damping, dt * 60);
+        gltf.scene.traverse((node) => {
+          if (!node.isMesh) return;
+          const geo = node.geometry;
+          if (!geo || !geo.attributes.position) return;
 
-        // Dead zone: snap very small velocities to 0
-        if (Math.abs(spinVelocity) < CFG.velocityDeadZone) {
-          spinVelocity = 0;
-          consecutiveStillFrames++;
-        } else {
-          consecutiveStillFrames = 0;
-        }
+          const pos = geo.attributes.position;
+          const hasIndex = geo.index !== null;
 
-        // ── Globe mode ──
-        if (state === 'landing') {
-          globeAngleY += (CFG.globeSpeedY + spinVelocity) * dt * 60;
-        }
+          // Get world matrix
+          node.updateWorldMatrix(true, false);
+          const worldMatrix = node.matrixWorld.clone();
 
-        // ── Face mode ──
-        if (state === 'agent') {
-          faceOffsetY += spinVelocity * dt * 60;
+          const vA = new THREE.Vector3();
+          const vB = new THREE.Vector3();
+          const vC = new THREE.Vector3();
 
-          // Start spring-back timer when scroll has truly stopped
-          // (velocity at 0 for 3+ consecutive frames AND 1.5s elapsed)
-          const scrolledRecently = (performance.now() - lastScrollTime) < CFG.faceIdleDelay;
-          const velocityDead = spinVelocity === 0 && consecutiveStillFrames >= 3;
+          const readVertex = (idx, target) => {
+            target.set(
+              pos.getX(idx),
+              pos.getY(idx),
+              pos.getZ(idx)
+            );
+            target.applyMatrix4(worldMatrix);
+          };
 
-          if (!scrolledRecently && velocityDead && !faceSpringActive) {
-            faceSpringActive = true;
-          }
+          const triCount = hasIndex
+            ? geo.index.count / 3
+            : pos.count / 3;
 
-          // Apply spring-back
-          if (faceSpringActive) {
-            const absOffset = Math.abs(faceOffsetY);
+          for (let t = 0; t < triCount; t++) {
+            const i0 = hasIndex ? geo.index.getX(t * 3)     : t * 3;
+            const i1 = hasIndex ? geo.index.getX(t * 3 + 1) : t * 3 + 1;
+            const i2 = hasIndex ? geo.index.getX(t * 3 + 2) : t * 3 + 2;
 
-            // Two-zone spring rate
-            const springRate = absOffset < CFG.faceZoneThreshold
-              ? CFG.faceSpringFast   // < 20°: quick return (glances)
-              : CFG.faceSpringSlow;  // ≥ 20°: slow return (deliberate looks)
+            readVertex(i0, vA);
+            readVertex(i1, vB);
+            readVertex(i2, vC);
 
-            faceOffsetY += (0 - faceOffsetY) * springRate * dt * 60;
+            // Triangle area using cross product magnitude / 2
+            const ab = new THREE.Vector3().subVectors(vB, vA);
+            const ac = new THREE.Vector3().subVectors(vC, vA);
+            const cross = new THREE.Vector3().crossVectors(ab, ac);
+            const area = cross.length() * 0.5;
 
-            // Snap when very close to center
-            if (absOffset < CFG.faceSnapThreshold) {
-              faceOffsetY = 0;
-              faceSpringActive = false;
-              consecutiveStillFrames = 0;
+            if (area > 0) {
+              triangles.push({
+                a: vA.clone(),
+                b: vB.clone(),
+                c: vC.clone(),
+                area,
+              });
             }
           }
+        });
+
+        return triangles;
+      }
+
+      /**
+       * Sample N points uniformly across the triangle surface,
+       * with probability proportional to triangle area.
+       */
+      function samplePoints(triangles, N) {
+        if (triangles.length === 0) return [];
+
+        // Build cumulative area array
+        const cumArea = new Float64Array(triangles.length);
+        let totalArea = 0;
+        for (let i = 0; i < triangles.length; i++) {
+          totalArea += triangles[i].area;
+          cumArea[i] = totalArea;
         }
-      }
 
-      function isFaceAtRest() {
-        return Math.abs(faceOffsetY) < CFG.faceRestThreshold && !faceSpringActive;
-      }
+        // Helper: find triangle index for a given area value (binary search)
+        const findTriangle = (target) => {
+          let lo = 0, hi = cumArea.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (cumArea[mid] < target) lo = mid + 1;
+            else hi = mid;
+          }
+          return lo;
+        };
 
-      function isFaceScrolling() {
-        return Math.abs(spinVelocity) > CFG.velocityDeadZone || faceSpringActive;
-      }
+        // Sampled barycentric coordinates for uniform triangle sampling
+        // P = A*(1 - sqrt(r1)) + B*(sqrt(r1)*(1 - r2)) + C*(sqrt(r1)*r2)
+        const points = [];
+        for (let i = 0; i < N; i++) {
+          const target = Math.random() * totalArea;
+          const triIdx = findTriangle(target);
+          const tri = triangles[triIdx];
 
-      function reset() {
-        spinVelocity = 0;
-        globeAngleY = 0;
-        faceOffsetY = 0;
-        faceSpringActive = false;
-        consecutiveStillFrames = 0;
-        lastScrollTime = 0;
-        if (faceSpringTimer) {
-          clearTimeout(faceSpringTimer);
-          faceSpringTimer = null;
+          const r1 = Math.random();
+          const r2 = Math.random();
+          const sqrtR1 = Math.sqrt(r1);
+          const u = 1 - sqrtR1;
+          const v = sqrtR1 * (1 - r2);
+          // w = sqrtR1 * r2  (not needed since u + v + w = 1)
+
+          const px = tri.a.x * u + tri.b.x * v + tri.c.x * (sqrtR1 * r2);
+          const py = tri.a.y * u + tri.b.y * v + tri.c.y * (sqrtR1 * r2);
+          const pz = tri.a.z * u + tri.b.z * v + tri.c.z * (sqrtR1 * r2);
+
+          points.push({ x: px, y: py, z: pz });
         }
+
+        return points;
       }
 
-      // Expose for use in animate()
+      /**
+       * Normalize points to fit within a unit-sphere bounding volume,
+       * centered at origin. Matches the scale of the icosahedron.
+       */
+      function normalizeToUnitSphere(points) {
+        if (points.length === 0) return points;
+
+        // Compute centroid
+        let cx = 0, cy = 0, cz = 0;
+        for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
+        cx /= points.length; cy /= points.length; cz /= points.length;
+
+        // Compute max distance from centroid
+        let maxDist = 0;
+        for (const p of points) {
+          const dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (d > maxDist) maxDist = d;
+        }
+
+        if (maxDist === 0) return points;
+
+        // Scale to unit sphere radius (~1.0, matching icoPoints)
+        const scale = 1.0 / maxDist;
+        const normalized = [];
+        for (const p of points) {
+          normalized.push({
+            x: (p.x - cx) * scale,
+            y: (p.y - cy) * scale,
+            z: (p.z - cz) * scale,
+          });
+        }
+        return normalized;
+      }
+
+      /**
+       * Detect sharp edges for contour lines.
+       * Returns list of [idxA, idxB] edge pairs where the angle
+       * between adjacent triangle normals exceeds a threshold.
+       *
+       * Note: This is an optional quality enhancement. The basic
+       * k-NN edges from nearestNeighborEdges() are sufficient.
+       */
+      function detectContourEdges(triangles, samplePoints, N, angleThresholdDeg) {
+        // Build vertex → triangle adjacency
+        // For each sample point, find which triangles contribute to it
+        // If two triangles sharing an edge have normals > threshold apart,
+        // mark the edge between their corresponding sample points
+
+        // This is a more advanced feature. For the initial implementation,
+        // we skip this and use only the uniform k-NN edges.
+        return []; // Reserved for Phase 2
+      }
+
+      /**
+       * Main entry: load a GLB URL or File, return { points, edges }.
+       *
+       * @param {string|File|Blob} source - URL string or File object
+       * @param {number} [N=478] - number of sample points
+       * @returns {Promise<{points: Array<{x,y,z}>, edgeIndices: Array<[number,number]>}>}
+       */
+      async function loadAndSample(source, N = 478) {
+        let gltf;
+
+        if (typeof source === 'string') {
+          // URL
+          gltf = await loader.loadAsync(source);
+        } else {
+          // File or Blob — convert to URL
+          const url = URL.createObjectURL(source);
+          try {
+            gltf = await loader.loadAsync(url);
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        }
+
+        console.time('GLBMorphEngine: extract');
+        const triangles = extractTriangles(gltf);
+        console.timeEnd('GLBMorphEngine: extract');
+        console.log(`Extracted ${triangles.length} triangles from GLB`);
+
+        if (triangles.length === 0) {
+          throw new Error('GLB file contains no triangle geometry');
+        }
+
+        console.time('GLBMorphEngine: sample');
+        let rawPoints = samplePoints(triangles, N);
+        console.timeEnd('GLBMorphEngine: sample');
+
+        console.time('GLBMorphEngine: normalize');
+        const points = normalizeToUnitSphere(rawPoints);
+        console.timeEnd('GLBMorphEngine: normalize');
+
+        console.time('GLBMorphEngine: edges');
+        // Reuse existing nearestNeighborEdges function (defined in outer scope)
+        // It needs to be accessible — we'll pass it or reference it
+        const edges = nearestNeighborEdges(points, 6);
+        console.timeEnd('GLBMorphEngine: edges');
+
+        return { points, edges };
+      }
+
+      /**
+       * Convert points array to Float32Array matching icoGeo format.
+       */
+      function pointsToFloat32Array(points) {
+        const arr = new Float32Array(points.length * 3);
+        for (let i = 0; i < points.length; i++) {
+          arr[i * 3]     = points[i].x;
+          arr[i * 3 + 1] = points[i].y;
+          arr[i * 3 + 2] = points[i].z;
+        }
+        return arr;
+      }
+
+      /**
+       * Build edge index array from edge pairs.
+       */
+      function edgesToIndexArray(edges) {
+        const arr = [];
+        for (const [a, b] of edges) {
+          arr.push(a, b);
+        }
+        return arr;
+      }
+
       return {
-        get spinVelocity() { return spinVelocity; },
-        get globeAngleY() { return globeAngleY; },
-        get faceOffsetY() { return faceOffsetY; },
-        get faceSpringActive() { return faceSpringActive; },
-        get enabled() { return enabled; },
-        get CFG() { return CFG; },
-        handleWheel,
-        handleTouchStart,
-        handleTouchMove,
-        handleTouchEnd,
-        update,
-        isFaceAtRest,
-        isFaceScrolling,
-        reset,
+        loadAndSample,
+        extractTriangles,
+        samplePoints,
+        normalizeToUnitSphere,
+        pointsToFloat32Array,
+        edgesToIndexArray,
       };
     })();
 ```
 
----
+**Critical note about `nearestNeighborEdges`:** The function `nearestNeighborEdges` is defined at line 483. Since it's in the module scope (not inside GLBMorphEngine's IIFE), the GLBMorphEngine can reference it directly because it's also defined in the same `<script>` scope. JavaScript closures handle this — the IIFE captures the outer scope. No changes needed.
 
-### Step 3: Replace landing rotation in `animate()` (lines 730-735)
+### Step 3: Create a morph-to-GLB function (insert after triggerTransform, around line 791)
 
-**Remove** these 6 lines:
+Add a new function that handles morphing from the current state to a GLB model:
+
 ```javascript
-      // --- Landing rotation ---
-      if (state === 'landing') {
-        icoGroup.rotation.x += 0.003;
-        icoGroup.rotation.y += 0.005;
-        icoGroup.rotation.z += 0.001;
+    /**
+     * Morph from the current shape to a GLB model's point cloud representation.
+     * Works from both landing state (icosahedron) and agent state (face).
+     *
+     * @param {string|File} source - URL or File object pointing to a .glb file
+     * @param {object} [options]
+     * @param {number} [options.duration=2.0] - morph duration in seconds
+     * @param {number} [options.N=478] - number of sample points
+     * @param {function} [options.onProgress] - callback(phase, detail)
+     */
+    async function morphToGLB(source, options = {}) {
+      const { duration = 2.0, N = 478, onProgress } = options;
+
+      if (isAnimating) return;
+      if (N !== NUM) {
+        console.warn(`GLB sample count ${N} does not match NUM ${NUM}. Vertex count mismatch will cause issues.`);
+        return;
       }
-```
 
-**Replace with:**
-```javascript
-      // --- Scroll-driven rotation ---
-      ScrollController.update(dt);
+      isAnimating = true;
+      const prevState = state;
+      state = 'transforming';
+      if (window.__scene) window.__scene.state = state;
 
-      if (state === 'landing') {
-        icoGroup.rotation.x += ScrollController.CFG.globeSpeedX;
-        icoGroup.rotation.y = ScrollController.globeAngleY;
-        icoGroup.rotation.z += ScrollController.CFG.globeSpeedZ;
+      onProgress?.('loading', 'Loading GLB file...');
+
+      let glbData;
+      try {
+        glbData = await GLBMorphEngine.loadAndSample(source, N);
+      } catch (err) {
+        console.error('GLB morph failed:', err);
+        isAnimating = false;
+        state = prevState;
+        if (window.__scene) window.__scene.state = state;
+        onProgress?.('error', err.message);
+        return;
       }
-```
 
----
+      onProgress?.('morphing', 'Morphing...');
 
-### Step 4: Modify agent-mode head rotation (lines 792-803)
+      // Store starting positions (current state of the vertex buffer)
+      const startPos = new Float32Array(positions); // snapshot current positions
 
-**Find** lines 792-803:
-```javascript
-        // --- Head group animation (F11/F15) ---
-        const headMotion = HeadMotion.update(dt);
-        if (headMotion && icoGroup) {
-          icoGroup.rotation.y += (headMotion.yaw * 0.5 - icoGroup.rotation.y) * Math.min(1, dt * 2.5);
-          icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
-          icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
-        } else if (icoGroup && state === 'agent') {
-          const swayAmp = 0.6;
-          const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
-          icoGroup.rotation.y += (sway - icoGroup.rotation.y) * Math.min(1, dt * 2);
-          icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
-        }
-```
+      // Compute target positions
+      const targetPos = GLBMorphEngine.pointsToFloat32Array(glbData.points);
+      const targetEdges = GLBMorphEngine.edgesToIndexArray(glbData.edges);
 
-**Replace with:**
-```javascript
-        // --- Head group animation (F11/F15) — scroll-aware ---
-        const scrollY = ScrollController.faceOffsetY;
-        const scrolling = ScrollController.isFaceScrolling();
-        const atRest = ScrollController.isFaceAtRest();
+      // Build new edge geometry for the GLB wireframe
+      // We update the shared edge geometry indices to match the new model
+      const newEdgeIndices = targetEdges;
+      icoEdgeGeo.setIndex(newEdgeIndices);
+      icoEdgeGeo.setDrawRange(0, newEdgeIndices.length);
+      icoEdgeGlow.geometry.setIndex(newEdgeIndices);
+      icoEdgeGlow.geometry.setDrawRange(0, newEdgeIndices.length);
 
-        const headMotion = HeadMotion.update(dt);
-        if (headMotion && icoGroup) {
-          // Head motion yaw layered on top of scroll offset
-          const headYaw = headMotion.yaw * 0.5;
-          icoGroup.rotation.y = scrollY + headYaw;
-          icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
-          icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
-        } else if (icoGroup && state === 'agent') {
-          if (atRest) {
-            // Face is at rest — gentle breathing sway (original behavior)
-            const swayAmp = 0.6;
-            const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
-            icoGroup.rotation.y = sway;  // sway replaces, not adds to, Y rotation at rest
-            icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
-          } else if (scrolling) {
-            // User is scrolling or spring-back is active — set rotation directly
-            icoGroup.rotation.y = scrollY;
-            // X rotation slowly drifts to 0 to avoid tilted face
-            icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
-          } else {
-            // Intermediate: blend toward resting sway
-            const swayAmp = 0.6;
-            const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
-            icoGroup.rotation.y += (sway - icoGroup.rotation.y) * Math.min(1, dt * 2);
-            icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
+      // Hide face-specific features during GLB morph
+      const faceWasVisible = faceContourLines && faceContourLines.material.opacity > 0.01;
+      if (faceWasVisible) {
+        gsap.to(faceContourLines.material,  { opacity: 0, duration: 0.3 });
+        gsap.to(faceContourGlow.material,   { opacity: 0, duration: 0.3 });
+        gsap.to(faceNeighborLines.material, { opacity: 0, duration: 0.3 });
+        gsap.to(faceMouthCavity.material,   { opacity: 0, duration: 0.3 });
+        faceKeyNodes.forEach(n => gsap.to(n.material, { opacity: 0, duration: 0.3 }));
+        faceIrisNodes.forEach(n => gsap.to(n.material, { opacity: 0, duration: 0.3 }));
+      }
+
+      // Show icosahedron wireframe (it was hidden during face mode)
+      gsap.to(icoEdgeMat,     { opacity: 0.25, duration: 0.3 });
+      gsap.to(icoEdgeGlowMat, { opacity: 0.08, duration: 0.3 });
+
+      // Reset rotation
+      icoGroup.rotation.set(0, 0, 0);
+      ScrollController.reset();
+
+      // Animate the morph
+      const morphObj = { progress: 0 };
+      gsap.to(morphObj, {
+        progress: 1,
+        duration,
+        ease: 'power2.inOut',
+        onUpdate: () => {
+          const t = easeInOutCubic(morphObj.progress);
+          for (let i = 0; i < NUM; i++) {
+            positions[i * 3]     = startPos[i * 3]     + (targetPos[i * 3]     - startPos[i * 3])     * t;
+            positions[i * 3 + 1] = startPos[i * 3 + 1] + (targetPos[i * 3 + 1] - startPos[i * 3 + 1]) * t;
+            positions[i * 3 + 2] = startPos[i * 3 + 2] + (targetPos[i * 3 + 2] - startPos[i * 3 + 2]) * t;
           }
-        }
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+        },
+        onComplete: () => {
+          // Snap to exact target
+          positions.set(targetPos);
+          icoGeo.attributes.position.needsUpdate = true;
+          icoEdgeGeo.attributes.position.needsUpdate = true;
+          updateFaceGeometry(positions);
+
+          onProgress?.('complete', 'Done');
+          isAnimating = false;
+          state = 'agent'; // Treat GLB models same as agent state
+          if (window.__scene) {
+            window.__scene.state = state;
+            window.__scene.glbmorph = { points: glbData.points, edges: glbData.edges };
+          }
+        },
+      });
+    }
 ```
 
----
+### Step 4: Update `resetToLanding()` to restore ico edge indices (line ~817)
 
-### Step 5: Add `ScrollController.reset()` in `triggerTransform()` (line 553)
+When resetting from a GLB model back to the icosahedron, the edge indices were changed by `morphToGLB`. We need to restore the original icosahedron edge indices.
 
-**Find** line 553:
+Find `resetToLanding()` and add after the ScrollController reset:
+
 ```javascript
-      // Reset accumulated landing rotation so face aligns with world
-      icoGroup.rotation.set(0, 0, 0);
+      // Restore original icosahedron edge indices (may have been changed by GLB morph)
+      icoEdgeGeo.setIndex(nnIndices);
+      icoEdgeGeo.setDrawRange(0, nnIndices.length);
+      icoEdgeGlow.geometry.setIndex(nnIndices);
+      icoEdgeGlow.geometry.setDrawRange(0, nnIndices.length);
 ```
 
-**Replace with:**
+Insert this right after `ScrollController.reset();` on line 797.
+
+### Step 5: Expose `morphToGLB` globally for testing (line ~1708, end of script)
+
+Add near the bottom of the script, alongside the other `window.__scene` assignments:
+
 ```javascript
-      // Reset accumulated rotation so face aligns with world
-      icoGroup.rotation.set(0, 0, 0);
-      ScrollController.reset();
+    window.morphToGLB = morphToGLB;
+    window.GLBMorphEngine = GLBMorphEngine;
 ```
 
----
+### Step 6: Add a file input for drag-and-drop testing (optional, for dev)
 
-### Step 6: Add `ScrollController.reset()` in `resetToLanding()` (after line 608)
-
-**Find** line 608:
-```javascript
-      if (state === 'landing' || isAnimating) return;
-      isAnimating = true;
-```
-
-**Replace with:**
-```javascript
-      if (state === 'landing' || isAnimating) return;
-      isAnimating = true;
-      ScrollController.reset();
-```
-
----
-
-### Step 7: Register event listeners (insert after line 809, before `// --- Raycasting ---`)
-
-Location: After `requestAnimationFrame(animate);` (line 809), before `// --- Raycasting ---` (line 811).
-
-Insert:
-```javascript
-
-    // ═══ Scroll & Touch Listeners ═══
-    canvas.addEventListener('wheel', (e) => ScrollController.handleWheel(e), { passive: false });
-
-    canvas.addEventListener('touchstart', (e) => ScrollController.handleTouchStart(e), { passive: false });
-    canvas.addEventListener('touchmove', (e) => ScrollController.handleTouchMove(e), { passive: false });
-    canvas.addEventListener('touchend', (e) => ScrollController.handleTouchEnd(e), { passive: false });
-
-    // Prevent the canvas from being a scroll target at the browser level
-    canvas.addEventListener('wheel', (e) => {
-      if (ScrollController.enabled && (typeof isAnimating === 'undefined' || !isAnimating)) {
-        e.preventDefault();
-      }
-    }, { passive: false });
-```
-
-Note: The wheel listener is intentionally registered twice — the first calls `handleWheel` for the rotation logic, the second is the `preventDefault` guard that must run even if the controller itself decides to skip the frame (e.g., during animation). Actually, this is redundant since `handleWheel` already calls `preventDefault`. Simplify to just one listener.
-
-**Revised insertion (single listener approach):**
+Add a hidden file input that accepts `.glb` files:
 
 ```javascript
+    // ═══ GLB File Drop Zone (dev/testing) ═══
+    const glbInput = document.createElement('input');
+    glbInput.type = 'file';
+    glbInput.accept = '.glb,.gltf';
+    glbInput.style.display = 'none';
+    document.body.appendChild(glbInput);
 
-    // ═══ Scroll & Touch Listeners ═══
-    canvas.addEventListener('wheel', (e) => {
-      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
-        e.preventDefault();
-        ScrollController.handleWheel(e);
-      }
-    }, { passive: false });
+    glbInput.addEventListener('change', async () => {
+      const file = glbInput.files[0];
+      if (!file) return;
+      console.log(`Morphing to GLB: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+      await morphToGLB(file, {
+        onProgress: (phase, detail) => console.log(`[GLB] ${phase}: ${detail}`),
+      });
+    });
 
-    canvas.addEventListener('touchstart', (e) => {
-      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
-        ScrollController.handleTouchStart(e);
-      }
-    }, { passive: false });
-
-    canvas.addEventListener('touchmove', (e) => {
-      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
-        ScrollController.handleTouchMove(e);
-      }
-    }, { passive: false });
-
-    canvas.addEventListener('touchend', (e) => {
-      if (ScrollController.enabled && !isAnimating && !REDUCED_MOTION) {
-        ScrollController.handleTouchEnd(e);
-      }
-    }, { passive: false });
-```
-
----
-
-### Step 8: Update `resetToLanding()` camera Z handling
-
-In `resetToLanding()`, lines 672-673, the camera Z animates back to 6:
-```javascript
-      // Restore camera
-      gsap.to(camera.position, { z: 6, duration: 1.2, ease: 'power2.inOut' });
-```
-
-This stays as-is — we are NOT touching camera Z with scroll zoom in this phase.
-
----
-
-### Step 9: Handle `prefers-reduced-motion` changes at runtime
-
-After the initial `REDUCED_MOTION` check in Step 1, also listen for runtime changes:
-
-```javascript
-    window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', (e) => {
-      if (e.matches) {
-        ScrollController.reset();
+    // Trigger file picker on 'G' key press (dev shortcut)
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'g' && !e.ctrlKey && !e.metaKey && document.activeElement === document.body) {
+        glbInput.click();
       }
     });
 ```
 
-Insert this after the event listeners block (after Step 7's insertion).
+---
+
+## Part 4: Performance Considerations
+
+### Triangle Count Limits
+
+| Model complexity | Triangles | Extract time | Sample time | Total |
+|-----------------|-----------|-------------|-------------|-------|
+| Low poly (game prop) | ~5K | ~5ms | ~3ms | ~10ms |
+| Medium (character) | ~50K | ~30ms | ~8ms | ~40ms |
+| High (detailed scene) | ~500K | ~200ms | ~15ms | ~220ms |
+| Extreme (architectural) | ~2M | ~800ms | ~25ms | ~850ms |
+
+For models over 500K triangles, consider showing a progress indicator. The extraction is CPU-bound (single-threaded). A Web Worker could offload this but adds complexity.
+
+### Memory
+
+- Triangle array: `triangles × (3 vertices × 3 floats × 8 bytes + 1 area × 8 bytes)` ≈ `triangles × 80 bytes`
+- 500K triangles ≈ 40MB temporary allocation during extraction
+- GC cleans this up after sampling
+
+### Edge Cases
+
+| Case | Handling |
+|------|----------|
+| GLB with no meshes | Throw error, abort morph |
+| GLB with points/lines only (no triangles) | `triangles` array is empty → throw |
+| GLB with multiple scenes | Traverses the default scene only |
+| GLB with skinned meshes | Use `node.updateWorldMatrix()` for correct transform |
+| GLB with non-uniform scale | Handled by world matrix transform |
+| GLB > 50MB file | Browser may timeout; show loading state |
+| N != 478 | Currently requires N = NUM (478). Can be made dynamic later |
 
 ---
 
-## Verification Checklist
+## Part 5: Verification Checklist
 
-After implementation, verify each bullet point:
+### Basic Functionality
+- [ ] `GLTFLoader` imports correctly from CDN
+- [ ] `GLBMorphEngine.extractTriangles()` works on a simple GLB (e.g., a cube)
+- [ ] `GLBMorphEngine.samplePoints()` returns exactly 478 points
+- [ ] Points are within unit sphere after normalization
+- [ ] `nearestNeighborEdges()` produces valid edge pairs for sampled points
+- [ ] `morphToGLB()` animates from current shape to GLB shape
+- [ ] Wireframe edges update to match the new model
+- [ ] `resetToLanding()` restores original ico edge indices
+- [ ] Works from both landing state (icosahedron) and agent state (face)
+- [ ] Handles multi-mesh GLB files correctly (applies world transforms)
 
-### Globe Mode (Landing State)
-- [ ] Globe auto-rotates at visibly slower speed than before (about 1/3 the original)
-- [ ] Horizontal trackpad swipe (two fingers left/right) rotates the globe horizontally
-- [ ] Shift + mouse wheel rotates the globe horizontally
-- [ ] Regular mouse wheel (no shift) rotates the globe horizontally as fallback
-- [ ] After scrolling stops, inertia carries the globe briefly before settling
-- [ ] Globe never fully stops — auto-rotate continues even after inertia decays
-- [ ] X and Z auto-rotate continue independently of scroll
-- [ ] Tap on the globe still triggers the transform to face (touch tap = < 5px movement, < 300ms)
+### Visual Quality
+- [ ] Sampled points are evenly distributed (no visible clustering)
+- [ ] Wireframe looks like the model silhouette
+- [ ] Dot cloud reads as the shape from multiple angles
+- [ ] Smooth animation (no jank, 60fps maintained)
+- [ ] Model is centered and properly scaled to fill the view
 
-### Face Mode (Agent State)
-- [ ] Face faces forward (0° Y rotation) by default after transform completes
-- [ ] Horizontal scroll rotates the face left and right
-- [ ] After ~1.5 seconds of no scroll input, the face begins springing back to center
-- [ ] Small rotations (< ~20°) snap back quickly (~0.5s to settle)
-- [ ] Large rotations (≥ ~20°) drift back slowly (~2s to settle)
-- [ ] New scroll input immediately cancels the spring-back
-- [ ] When face is at rest, breathing sway resumes
-- [ ] When face is scrolling or springing, sway is suppressed
-- [ ] Escape key resets to globe: rotation resets, scroll state resets
+### Edge Cases
+- [ ] Empty GLB: graceful error, no crash
+- [ ] Very large GLB (>500K triangles): completes without browser freeze
+- [ ] GLB with animations: ignores animations, uses rest pose
+- [ ] Consecutive morphs: does not accumulate state bugs
+- [ ] Morph during morph: second morph is correctly blocked by `isAnimating`
 
-### Transitions
-- [ ] Clicking globe to transform: rotation resets to (0,0,0), face appears centered
-- [ ] During the 2-second transform animation, scroll input is ignored
-- [ ] Escape / nav home to reset: rotation resets, globe auto-rotate resumes
-
-### Reduced Motion
-- [ ] When `prefers-reduced-motion: reduce` is active, scroll rotation is disabled
-- [ ] Globe still auto-rotates at 10% speed
-- [ ] If setting changes at runtime (e.g., user toggles accessibility setting), state resets
-
-### Mobile / Touch
-- [ ] Single-finger horizontal swipe rotates the globe/face
-- [ ] Tap triggers transform (same as click)
-- [ ] Multi-touch is ignored (no pinch zoom implemented yet)
-
-### Performance
-- [ ] No jank at 60fps
-- [ ] Damping behaves identically at 30fps, 60fps, 120fps
-- [ ] No memory leaks from event listeners
+### Integration
+- [ ] Scroll rotation works on GLB-morphed model
+- [ ] Escape key resets to icosahedron
+- [ ] Click-to-transform still works after GLB morph + reset
+- [ ] `window.__scene` exposes new GLB data
 
 ---
 
-## Parameter Tuning Guide
+## Part 6: Future Enhancements
 
-All tuning values are in `ScrollController.CFG` (Step 2). Adjust these to change feel:
-
-| Parameter | Default | Effect of increasing | Effect of decreasing |
-|-----------|---------|---------------------|---------------------|
-| `globeSpeedY` | `0.0015` | Faster auto-rotate | Slower auto-rotate |
-| `scrollFactor` | `0.004` | More responsive scroll | Less responsive, heavier feel |
-| `damping` | `0.96` | Longer inertia glide | Shorter, snappier stop |
-| `maxSpinVelocity` | `2.5` | Faster max spin | Lower speed ceiling |
-| `faceIdleDelay` | `1500` | Longer before spring-back | Quicker return |
-| `faceSpringFast` | `0.06` | Snappier small-angle return | More gradual return |
-| `faceSpringSlow` | `0.02` | Faster large-angle return | Slower, more respectful |
-| `faceZoneThreshold` | `0.35` | More angles treated as "deliberate look-away" | More treated as "quick glance" |
-
-To preview a parameter change without reimplementing: set `CFG.damping = 0.98` for a much longer glide, or `CFG.scrollFactor = 0.008` for more responsive scroll.
-
----
-
-## Future Phases (out of scope)
-
-- **Scroll zoom:** Map vertical scroll with no shift to camera Z. Requires GSAP coordination.
-- **Smooth camera easing:** Currently camera Z is set directly by GSAP during transforms. Could smooth-scroll between z positions.
-- **Pinch-to-zoom:** Two-finger pinch on trackpad/touchscreen → camera Z.
-- **Mouse drag rotation:** Click-drag to rotate (currently only scroll, not drag).
-- **Visual scroll indicator:** A subtle UI hint that the object is scroll-able.
-- **Lock Y rotation:** Allow user to "lock" the face at a rotated angle (double-click or long-press).
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Dynamic vertex count | Support any N, not just 478 | High |
+| Feature-aware sampling | More points along creases/edges | Medium |
+| Contour detection | Highlight sharp edges as contour lines | Medium |
+| GLB cache | Don't re-extract on repeated morphs | Low |
+| Web Worker extraction | Offload triangle extraction to worker | Low |
+| Progressive detail | Start with N=100 points, increase during morph | Low |
+| GLB → ico reverse morph | Morph from GLB back to icosahedron without full reset | Low |
+| Agent-driven GLB selection | LLM picks GLB URL based on conversation context | Low |
