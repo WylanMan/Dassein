@@ -198,10 +198,11 @@
     }
   </script>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/delaunator@5.1.0/delaunator.min.js"></script>
   <script type="module">
     import * as THREE from 'three';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
 
     const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -400,6 +401,137 @@
         handleWheel, handleTouchStart, handleTouchMove, handleTouchEnd,
         update, isFaceAtRest, isFaceScrolling, reset,
       };
+    })();
+
+    // ═══ Surface Morph Engine (uniform sampling + topology-aware edges) ═══
+    const SurfaceMorphEngine = (() => {
+
+      function sampleFromMesh(mesh, N) {
+        const sampler = new MeshSurfaceSampler(mesh);
+        sampler.build();
+
+        const points = new Array(N);
+        const faceIndices = new Int32Array(N);
+
+        const pos = new THREE.Vector3();
+        const distribution = sampler.distribution;
+        const totalArea = distribution[distribution.length - 1];
+
+        for (let i = 0; i < N; i++) {
+          const r = Math.random() * totalArea;
+          const faceIdx = sampler.binarySearch(r);
+          sampler.sampleFace(faceIdx, pos);
+          points[i] = { x: pos.x, y: pos.y, z: pos.z };
+          faceIndices[i] = faceIdx;
+        }
+
+        // Return the non-indexed geometry that MeshSurfaceSampler built
+        // (and that faceIndices reference), so topologyEdges uses the same
+        // triangle numbering.
+        return { points, faceIndices, geometry: sampler.geometry };
+      }
+
+      function topologyEdges(geo, faceIndices, N) {
+        const pos = geo.attributes.position;
+        // MeshSurfaceSampler always produces non-indexed geometry, where each
+        // consecutive triple of vertices is one triangle.
+        const triCount = pos.count / 3;
+
+        const edgeToFace = {};
+
+        const addFaceEdge = (vA, vB, faceIdx) => {
+          const key = Math.min(vA, vB) + '-' + Math.max(vA, vB);
+          if (!edgeToFace[key]) edgeToFace[key] = [];
+          edgeToFace[key].push(faceIdx);
+        };
+
+        for (let t = 0; t < triCount; t++) {
+          const i0 = t * 3;
+          const i1 = t * 3 + 1;
+          const i2 = t * 3 + 2;
+          addFaceEdge(i0, i1, t);
+          addFaceEdge(i1, i2, t);
+          addFaceEdge(i2, i0, t);
+        }
+
+        const faceAdj = {};
+        for (const [key, faces] of Object.entries(edgeToFace)) {
+          for (let i = 0; i < faces.length; i++) {
+            for (let j = i + 1; j < faces.length; j++) {
+              const fa = faces[i], fb = faces[j];
+              if (!faceAdj[fa]) faceAdj[fa] = new Set();
+              if (!faceAdj[fb]) faceAdj[fb] = new Set();
+              faceAdj[fa].add(fb);
+              faceAdj[fb].add(fa);
+            }
+          }
+        }
+
+        const faceToSamples = {};
+        for (let i = 0; i < N; i++) {
+          const f = faceIndices[i];
+          if (!faceToSamples[f]) faceToSamples[f] = [];
+          faceToSamples[f].push(i);
+        }
+
+        const indices = [];
+        const used = new Set();
+        for (let fa = 0; fa < vertCount; fa++) {
+          const neighbors = faceAdj[fa];
+          if (!neighbors) continue;
+          const samplesA = faceToSamples[fa];
+          if (!samplesA) continue;
+
+          for (const fb of neighbors) {
+            const samplesB = faceToSamples[fb];
+            if (!samplesB) continue;
+            for (const sa of samplesA) {
+              for (const sb of samplesB) {
+                const key = Math.min(sa, sb) + '-' + Math.max(sa, sb);
+                if (!used.has(key)) {
+                  used.add(key);
+                  indices.push(sa, sb);
+                }
+              }
+            }
+          }
+        }
+
+        return indices;
+      }
+
+      function normalizeToUnitSphere(points) {
+        if (points.length === 0) return [];
+        let cx = 0, cy = 0, cz = 0;
+        for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
+        cx /= points.length; cy /= points.length; cz /= points.length;
+
+        let maxDist = 0;
+        for (const p of points) {
+          const d = Math.hypot(p.x - cx, p.y - cy, p.z - cz);
+          if (d > maxDist) maxDist = d;
+        }
+
+        if (maxDist === 0) return points;
+        const scale = 1.0 / maxDist;
+        return points.map(p => ({
+          x: (p.x - cx) * scale,
+          y: (p.y - cy) * scale,
+          z: (p.z - cz) * scale,
+        }));
+      }
+
+      function pointsToFloat32Array(points) {
+        const arr = new Float32Array(points.length * 3);
+        for (let i = 0; i < points.length; i++) {
+          arr[i * 3]     = points[i].x;
+          arr[i * 3 + 1] = points[i].y;
+          arr[i * 3 + 2] = points[i].z;
+        }
+        return arr;
+      }
+
+      return { sampleFromMesh, topologyEdges, normalizeToUnitSphere, pointsToFloat32Array };
     })();
 
     // --- Wave 1: Deformation weights (precomputed) ---
@@ -703,6 +835,30 @@
       'my','your','his','her','our','their','me','him','us','them']);
     const VOWEL_SET = new Set(['a','e','i','o','u']);
 
+    // 2D Delaunay triangulation on XY projection of face landmarks
+    function delaunayEdgesFace(points) {
+      const coords = new Float64Array(points.length * 2);
+      for (let i = 0; i < points.length; i++) {
+        coords[i * 2] = points[i].x;
+        coords[i * 2 + 1] = points[i].y;
+      }
+      const del = new Delaunator(coords);
+      const edges = [];
+      const used = new Set();
+      const add = (a, b) => {
+        if (a === b) return;
+        const key = Math.min(a, b) + '-' + Math.max(a, b);
+        if (!used.has(key)) { used.add(key); edges.push([a, b]); }
+      };
+      for (let i = 0; i < del.triangles.length; i += 3) {
+        const a = del.triangles[i];
+        const b = del.triangles[i + 1];
+        const c = del.triangles[i + 2];
+        add(a, b); add(b, c); add(c, a);
+      }
+      return edges;
+    }
+
     // --- Load scan ---
     async function loadScan() {
       const r = await fetch('/data/robota_scan.json');
@@ -714,8 +870,8 @@
       baseLMs = faceLMs.map(p => ({ ...p }));
       workingBuffer = faceLMs.map(p => ({ ...p }));
 
-      // Compute triangulated NN edges for face (used as wireframe during face mode)
-      const faceNNEdges = nearestNeighborEdges(faceLMs, 6);
+      // Compute Delaunay edges for face (used as wireframe during face mode)
+      const faceNNEdges = delaunayEdgesFace(faceLMs);
       faceNNIndices = [];
       for (const [a, b] of faceNNEdges) faceNNIndices.push(a, b);
 
@@ -954,33 +1110,28 @@
     const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus'];
 
     async function loadShapeGLB(name) {
-      const loader = new GLTFLoader();
-      const gltf = await loader.loadAsync(`/data/shapes/${name}.glb`);
-      const mesh = gltf.scene.children[0];
-      const geo = mesh.geometry;
-      const rawVerts = geo.attributes.position.array;
-      const rawCount = rawVerts.length / 3;
-
-      // Sample shape surface at each Fibonacci direction → 478 morph targets
-      const targets = new Array(NUM);
-      for (let i = 0; i < NUM; i++) {
-        let bestD = Infinity, bestJ = 0;
-        const ip = icoPoints[i];
-        for (let j = 0; j < rawCount; j++) {
-          const dx = ip.x - rawVerts[j * 3];
-          const dy = ip.y - rawVerts[j * 3 + 1];
-          const dz = ip.z - rawVerts[j * 3 + 2];
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 < bestD) { bestD = d2; bestJ = j; }
-        }
-        targets[i] = { x: rawVerts[bestJ*3], y: rawVerts[bestJ*3+1], z: rawVerts[bestJ*3+2] };
+      let geo;
+      switch (name) {
+        case 'cube':     geo = new THREE.BoxGeometry(1, 1, 1, 20, 20, 20); break;
+        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 48, 1, true); break;
+        case 'pyramid':  geo = new THREE.ConeGeometry(0.5, 1.0, 4, 1); break;
+        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, 32, 80); break;
+        default: return null;
       }
-      shapeTargets = targets;
 
-      // Compute nearest-neighbor edges on the sampled 478-point cloud
-      const shapeEdges = nearestNeighborEdges(targets, 6);
-      shapeTargetEdgeIndices = [];
-      for (const [a, b] of shapeEdges) shapeTargetEdgeIndices.push(a, b);
+      const mat = new THREE.MeshBasicMaterial();
+      const mesh = new THREE.Mesh(geo, mat);
+
+      const { points, faceIndices, geometry: niGeo } = SurfaceMorphEngine.sampleFromMesh(mesh, NUM);
+      const normalized = SurfaceMorphEngine.normalizeToUnitSphere(points);
+
+      shapeTargets = normalized;
+
+      // Use the non-indexed geometry from the sampler — faceIndices reference its triangles
+      shapeTargetEdgeIndices = SurfaceMorphEngine.topologyEdges(niGeo, faceIndices, NUM);
+
+      geo.dispose();
+      mat.dispose();
       return true;
     }
 
