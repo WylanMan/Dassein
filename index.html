@@ -198,7 +198,6 @@
     }
   </script>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/delaunator@5.1.0/delaunator.min.js"></script>
   <script type="module">
     import * as THREE from 'three';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -526,100 +525,6 @@
       }
       return edges;
     }
-
-    // --- Surface-aware edge builders (replaces k-NN for non-convex shapes) ---
-
-    /**
-     * 2D Delaunay triangulation on XY projection — used for the face.
-     * Produces edges that follow the face's natural surface connectivity.
-     */
-    function delaunayEdgesFace(points) {
-      const coords = new Float64Array(points.length * 2);
-      for (let i = 0; i < points.length; i++) {
-        coords[i * 2] = points[i].x;
-        coords[i * 2 + 1] = points[i].y;
-      }
-      const del = new Delaunator(coords);
-      const edges = [];
-      const used = new Set();
-      const add = (a, b) => {
-        if (a === b) return;
-        const key = Math.min(a, b) + '-' + Math.max(a, b);
-        if (!used.has(key)) { used.add(key); edges.push([a, b]); }
-      };
-      for (let i = 0; i < del.triangles.length; i += 3) {
-        const a = del.triangles[i];
-        const b = del.triangles[i + 1];
-        const c = del.triangles[i + 2];
-        add(a, b); add(b, c); add(c, a);
-      }
-      return edges;
-    }
-
-    /**
-     * Derive edge connectivity from the original Three.js geometry's triangle
-     * topology, mapped through sample points. For primitive shapes (cube,
-     * cylinder, pyramid, torus), this ensures edges follow the actual surface
-     * instead of cutting through the interior like raw 3D k-NN does.
-     */
-    function meshTopologyEdges(sourceGeo, sourceVerts, N) {
-      const pos = sourceGeo.attributes.position;
-      const vertCount = pos.count;
-      const hasIndex = sourceGeo.index !== null;
-      const idxCount = hasIndex ? sourceGeo.index.count : vertCount;
-
-      // Build adjacency from original triangles
-      const origAdj = {};
-      const addOrigEdge = (a, b) => {
-        if (a === b) return;
-        if (!origAdj[a]) origAdj[a] = new Set();
-        if (!origAdj[b]) origAdj[b] = new Set();
-        origAdj[a].add(b);
-        origAdj[b].add(a);
-      };
-      for (let t = 0; t < idxCount; t += 3) {
-        const i0 = hasIndex ? sourceGeo.index.getX(t) : t;
-        const i1 = hasIndex ? sourceGeo.index.getX(t + 1) : t + 1;
-        const i2 = hasIndex ? sourceGeo.index.getX(t + 2) : t + 2;
-        addOrigEdge(i0, i1);
-        addOrigEdge(i1, i2);
-        addOrigEdge(i2, i0);
-      }
-
-      // Reverse map: original vertex → sample-point indices that map to it
-      const vertToSamples = {};
-      for (let i = 0; i < N; i++) {
-        const v = sourceVerts[i];
-        if (!vertToSamples[v]) vertToSamples[v] = [];
-        vertToSamples[v].push(i);
-      }
-
-      // Build sample-level edges: if original vertices share an edge,
-      // connect all sample points mapping to each endpoint
-      const indices = [];
-      const used = new Set();
-      for (let va = 0; va < vertCount; va++) {
-        const neighbors = origAdj[va];
-        if (!neighbors) continue;
-        const samplesA = vertToSamples[va];
-        if (!samplesA) continue;
-        for (const vb of neighbors) {
-          const samplesB = vertToSamples[vb];
-          if (!samplesB) continue;
-          for (const sa of samplesA) {
-            for (const sb of samplesB) {
-              const key = Math.min(sa, sb) + '-' + Math.max(sa, sb);
-              if (!used.has(key)) {
-                used.add(key);
-                indices.push(sa, sb);
-              }
-            }
-          }
-        }
-      }
-      return indices;
-    }
-
     const nnEdges = nearestNeighborEdges(icoPoints, 6);
     nnIndices = [];
     for (const [a, b] of nnEdges) nnIndices.push(a, b);
@@ -810,7 +715,7 @@
       workingBuffer = faceLMs.map(p => ({ ...p }));
 
       // Compute triangulated NN edges for face (used as wireframe during face mode)
-      const faceNNEdges = delaunayEdgesFace(faceLMs);
+      const faceNNEdges = nearestNeighborEdges(faceLMs, 6);
       faceNNIndices = [];
       for (const [a, b] of faceNNEdges) faceNNIndices.push(a, b);
 
@@ -1049,37 +954,33 @@
     const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus'];
 
     async function loadShapeGLB(name) {
-      let geo;
-      switch (name) {
-        case 'cube':     geo = new THREE.BoxGeometry(1, 1, 1, 12, 12, 12); break;
-        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 40, 1); break;
-        case 'pyramid':  geo = new THREE.ConeGeometry(0.5, 1.0, 4, 1); break;
-        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, 20, 60); break;
-        case 'sphere':   geo = new THREE.SphereGeometry(1, 36, 36); break;
-        default: return null;
-      }
-      const pos = geo.attributes.position;
-      const vertCount = pos.count;
+      const loader = new GLTFLoader();
+      const gltf = await loader.loadAsync(`/data/shapes/${name}.glb`);
+      const mesh = gltf.scene.children[0];
+      const geo = mesh.geometry;
+      const rawVerts = geo.attributes.position.array;
+      const rawCount = rawVerts.length / 3;
 
       // Sample shape surface at each Fibonacci direction → 478 morph targets
       const targets = new Array(NUM);
-      const sourceVerts = new Int32Array(NUM);
       for (let i = 0; i < NUM; i++) {
         let bestD = Infinity, bestJ = 0;
         const ip = icoPoints[i];
-        for (let j = 0; j < vertCount; j++) {
-          const dx = ip.x - pos.getX(j), dy = ip.y - pos.getY(j), dz = ip.z - pos.getZ(j);
+        for (let j = 0; j < rawCount; j++) {
+          const dx = ip.x - rawVerts[j * 3];
+          const dy = ip.y - rawVerts[j * 3 + 1];
+          const dz = ip.z - rawVerts[j * 3 + 2];
           const d2 = dx * dx + dy * dy + dz * dz;
           if (d2 < bestD) { bestD = d2; bestJ = j; }
         }
-        targets[i] = { x: pos.getX(bestJ), y: pos.getY(bestJ), z: pos.getZ(bestJ) };
-        sourceVerts[i] = bestJ;
+        targets[i] = { x: rawVerts[bestJ*3], y: rawVerts[bestJ*3+1], z: rawVerts[bestJ*3+2] };
       }
       shapeTargets = targets;
 
-      // Derive edges from the original mesh topology (surface-aware, not raw 3D k-NN)
-      shapeTargetEdgeIndices = meshTopologyEdges(geo, sourceVerts, NUM);
-      geo.dispose();
+      // Compute nearest-neighbor edges on the sampled 478-point cloud
+      const shapeEdges = nearestNeighborEdges(targets, 6);
+      shapeTargetEdgeIndices = [];
+      for (const [a, b] of shapeEdges) shapeTargetEdgeIndices.push(a, b);
       return true;
     }
 
