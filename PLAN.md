@@ -1,274 +1,460 @@
-# Dassein — Design Coherence Fix Plan
+# Dassein — Uniform Surface Sampling + Topology-Aware Edge Plan
 
 ## Goal
 
-Unify the visual language: **every shape, in every mode, renders as dots + triangulated wireframe edges only.** No filled surfaces, no model-native wireframes — just the 478-node point cloud connected by k-NN edges forming a triangular mesh. This gives the icosahedron, face, primitive shapes, and future GLB models the same coherent aesthetic.
+Replace the current Fibonacci-sphere→nearest-vertex sampling and 3D k-NN edge builder with a unified pipeline that produces **evenly-distributed points** and **surface-following triangular edges** for every shape type: primitives, GLB files, and the face. The result is a consistent wireframe aesthetic — no gaps, no cross-surface edge connections, uniform triangle sizes.
 
 ---
 
-## Problem Audit
+## Root Cause Analysis
 
-### P1: Filled MeshPanels in Shape Renderer
+The current pipeline has two independent problems:
 
-**File:** `index.html`, lines 953-959
+### Problem 1: Fibonacci-biased point distribution
 
-```javascript
-const fillMat = new THREE.MeshBasicMaterial({
-  color: 0x00d4ff, transparent: true, opacity: 0,
-  side: THREE.DoubleSide, depthWrite: false
-});
-const fillMesh = new THREE.Mesh(geo.clone(), fillMat);
-fillMesh.renderOrder = 2;
-group.add(fillMesh);
-```
+Points are sampled by mapping 478 Fibonacci-sphere directions to the nearest vertex on the target geometry (via `icoPoints[i]` → nearest `pos.getX(j)`). This means:
 
-This `fillMesh` is a solid filled surface that fades in at 10% opacity when switching to cube/cylinder/pyramid/torus. It breaks the wireframe-only aesthetic.
+- Point density mirrors the Fibonacci sphere's density pattern (polar clustering at Y=±1)
+- Dense mesh regions get many points; sparse regions get few
+- The 478-point count is a hard constraint from the icosahedron, not chosen for the target shape
+- No control over spacing uniformity
 
-**Fix:** Remove `fillMat`, `fillMesh`, and all references to `shapeGroup.children[0].material.opacity` throughout `morphToTarget()`, `resetToLanding()`, and the render loop. The shape visual becomes: **k-NN edges (wireframe) + point cloud (already handled by shared `icoCloud`).**
+### Problem 2: 3D Euclidean k-NN edges
 
-### P2: Triangular Wireframe Edges Disappear During Face Mode
+`nearestNeighborEdges(points, 6)` connects each point to its 6 closest neighbors in raw 3D space. For non-convex shapes:
 
-**File:** `index.html`, lines 770-771
+- A cube vertex near a face edge connects to points on the adjacent face (closer in 3D than points further along the same face)
+- Face landmarks connect across the face interior (nose tip neighbors forehead points)
+- Cylinder end-cap points connect to side-wall points across the sharp rim
+- Torus inner-ring points connect to opposing inner-ring points through the hole
 
-```javascript
-icoEdgeMat.opacity = 0.25 * (1 - t);  // → 0 at end of morph
-icoEdgeGlowMat.opacity = 0.08 * (1 - t);  // → 0
-```
-
-And lines 1070-1073 in `morphToTarget()`:
-
-```javascript
-const tIeOp = isFace ? 0 : (isSphere ? 0.25 : 0.04);
-const tIgOp = isFace ? 0 : (isSphere ? 0.08 : 0.02);
-icoEdgeMat.opacity = ieOp + (tIeOp - ieOp) * t;
-icoEdgeGlowMat.opacity = igOp + (tIgOp - igOp) * t;
-```
-
-The nearest-neighbor wireframe that creates the triangular look completely vanishes when the face is showing. The user wants triangular edges visible at ALL times.
-
-**Fix:** Compute `nearestNeighborEdges(faceLMs, 6)` to generate triangle-style edges for the face landmark positions. Set these as the edge geometry indices during face mode. Keep edge opacity at 0.12–0.20 during face mode (lower than sphere's 0.25 so contour lines remain readable).
-
-### P3: Face Lacks Triangulated Geometry — Only Contour Outlines
-
-**File:** `index.html`, lines 548-556
-
-```javascript
-function contourEdges(contours) {
-  const e = [];
-  for (const c of Object.values(contours)) {
-    for (let i = 0; i < c.length - 1; i++) e.push([c[i], c[i + 1]]);
-    if (c.length > 2) e.push([c[c.length - 1], c[0]]);
-  }
-  return e;
-}
-```
-
-The face wireframe is built from predefined contour paths (face oval, eye outlines, lip outlines, etc.) — essentially 2D drawing outlines. There are no 3D triangular edges connecting adjacent face landmarks.
-
-**Fix:** After `faceLMs` is populated, compute `nearestNeighborEdges(faceLMs, 6)` to generate the triangulated face mask. Store these as `faceNNIndices` and set them on `icoEdgeGeo` when switching to face mode. The contour lines remain as an overlay (they serve a different purpose: facial feature guidelines), but the core structural wireframe becomes triangular.
-
-### P4: Shape Wireframe Uses Model-Native Topology Instead of Triangular Edges
-
-**File:** `index.html`, lines 961-964
-
-```javascript
-const wireGeo = new THREE.WireframeGeometry(geo);
-const wireMat = new THREE.LineBasicMaterial({
-  color: 0x00d4ff, transparent: true, opacity: 0,
-  depthTest: false
-});
-const wireframe = new THREE.LineSegments(wireGeo, wireMat);
-```
-
-This creates a wireframe from the original mesh's own edge topology (e.g., a CubeGeometry wireframe is rectangular grid lines, not a triangular one). The user wants the same k-NN triangulated look as the sphere.
-
-**Fix:** After `shapeTargets` is computed (line 947), run `nearestNeighborEdges(shapeTargets, 6)` to get triangle-style edges between the 478 sampled points. Set those as the edge indices on `icoEdgeGeo` during shape mode, exactly like the sphere. Remove `WireframeGeometry` and `shapeWire` entirely.
+Both problems combine to produce a wireframe with uneven triangle sizes and edges that look scrambled on non-convex shapes.
 
 ---
 
-## Unified Design System
+## The Unified Pipeline
 
-After all fixes, the visual rule becomes:
+### Architecture
 
-| Mode | Point cloud | Wireframe edges | Opacity | Contour lines |
-|------|------------|-----------------|---------|--------------|
-| Landing (sphere) | icoCloud (478 dots) | NN edges on icoPoints, k=6 | 0.25 / glow 0.08 | None |
-| Face | icoCloud (478 dots) | NN edges on faceLMs, k=6 | 0.16 / glow 0.05 | Face contours 0.75 |
-| Primitive shapes | icoCloud (478 dots) | NN edges on shapeTargets, k=6 | 0.20 / glow 0.06 | None |
-| GLB model | icoCloud (478 dots) | NN edges on sampled points, k=6 | 0.20 / glow 0.06 | None |
+```
+Input (GLB / Three.js geometry / face landmarks)
+        │
+        ▼
+┌──────────────────────────────────┐
+│  1. Ensure triangle mesh         │
+│     - Primitive: built-in geo     │
+│     - GLB: GLTFLoader first mesh  │
+│     - Face: Delaunay mesh from    │
+│       landmarks projected to XY   │
+└──────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────┐
+│  2. MeshSurfaceSampler.build()   │
+│     - O(n) cumulative area dist  │
+│     - Triangle-area-weighted      │
+└──────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────┐
+│  3. Sample N points + face index │
+│     - Barycentric coords per tri  │
+│     - Record (pos, faceIdx)       │
+│     - Normalize to unit sphere    │
+└──────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────┐
+│  4. Build topology-aware edges   │
+│     - From original mesh index    │
+│     - Triangle adjacency graph    │
+│     - Map through faceIdx →       │
+│       sample-point connectivity   │
+└──────────────────────────────────┘
+        │
+        ▼
+Output: { points[], edgePairs[] }
+        │
+        ▼
+   Existing morph pipeline
+   (icoGeo.attributes.position,
+    icoEdgeGeo.setIndex, lerp)
+```
+
+### Key Dependency
+
+`MeshSurfaceSampler` from Three.js examples CDN:
+
+```
+import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
+```
+
+Already available at `three@0.152.0`. No external packages needed. API:
+
+- `new MeshSurfaceSampler(mesh)` — constructor, auto-converts indexed→non-indexed
+- `.build()` — computes cumulative area distribution, O(n)
+- `.sample(targetPos, targetNormal?, targetColor?)` — picks random surface point
+- Internally: binary search on cumulative area → `sampleFace(faceIdx, ...)`
+
+The sampler is built once per shape. Sampling N points calls `.sample()` N times — O(N log n).
+
+### Why This Works
+
+- **Even spacing:** Triangle-area-weighted sampling guarantees uniform density — every square unit of surface area has equal probability of receiving a point. No Fibonacci bias.
+- **Surface-following edges:** Building edges from the original mesh's triangle adjacency means edges connect points whose source triangles share a geometric edge on the surface. These edges wrap around the surface, never crossing through interior or bridging across features.
+- **Consistent N=478:** We sample exactly N points from any mesh. The vertex count invariant is preserved.
 
 ---
 
 ## Implementation Steps
 
-### Step 1: Compute Face NN Edges (insert after line 700, after `faceLMs` is built)
+### Step 0: Import MeshSurfaceSampler
 
-Add after `workingBuffer = faceLMs.map(p => ({ ...p }));`:
+**File:** `index.html`, near line 204 (alongside existing Three.js imports)
 
 ```javascript
-      const faceNNEdges = nearestNeighborEdges(faceLMs, 6);
-      const faceNNIndices = [];
-      for (const [a, b] of faceNNEdges) faceNNIndices.push(a, b);
+import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
 ```
 
-Store `faceNNIndices` on `window.__scene` for cross-mode access.
+### Step 1: Build the `SurfaceMorphEngine` module
 
-### Step 2: Rewrite `buildShapeGeometry()` — Remove Filled Panels, Use NN Edges
-
-Replace lines 922-976 (`buildShapeGeometry` function) with a version that:
-- Removes `fillMesh`, `fillMat`
-- Removes `WireframeGeometry`, `shapeWire`
-- Computes `nearestNeighborEdges(shapeTargets, 6)` after sampling
-- Stores shape-specific edge indices in `shapeTargetEdgeIndices`
-- Does NOT create or attach meshes to `icoGroup` — the shared `icoEdgeGeo` handles the wireframe
+**File:** `index.html`, insert after the `ScrollController` IIFE (after line ~401)
 
 ```javascript
-    let shapeTargetEdgeIndices = null; // Edge indices for the current shape's NN wireframe
+    // ═══ Surface Morph Engine (uniform sampling + topology-aware edges) ═══
+    const SurfaceMorphEngine = (() => {
 
-    async function buildShapeGeometry(name) {
+      /**
+       * Sample N points uniformly from a Three.js mesh surface.
+       * Returns { points, faceIndices } where faceIndices[i] is the source
+       * triangle index for point i — needed for topology-aware edge building.
+       */
+      function sampleFromMesh(mesh, N) {
+        const sampler = new MeshSurfaceSampler(mesh);
+        sampler.build();
+
+        const points = new Array(N);
+        const faceIndices = new Int32Array(N);
+
+        const pos = new THREE.Vector3();
+        const distribution = sampler.distribution;
+        const totalArea = distribution[distribution.length - 1];
+
+        for (let i = 0; i < N; i++) {
+          const r = Math.random() * totalArea;
+          const faceIdx = sampler.binarySearch(r);
+          sampler.sampleFace(faceIdx, pos);
+          points[i] = { x: pos.x, y: pos.y, z: pos.z };
+          faceIndices[i] = faceIdx;
+        }
+
+        return { points, faceIndices };
+      }
+
+      /**
+       * Build edge indices from a triangle mesh's adjacency graph,
+       * mapped through sample-point face assignments.
+       *
+       * @param {THREE.BufferGeometry} geo - original triangle mesh geometry
+       * @param {Int32Array} faceIndices - which triangle each sample point
+       *        belongs to (output of sampleFromMesh)
+       * @param {number} N - number of sample points
+       * @returns {number[]} flat array of edge index pairs [a,b, c,d, ...]
+       */
+      function topologyEdges(geo, faceIndices, N) {
+        const pos = geo.attributes.position;
+        const hasIndex = geo.index !== null;
+        const vertCount = pos.count / 3; // faces are triples
+
+        // Build adjacency: face A and face B share an edge if they
+        // have two vertices in common
+        const faceAdj = {};
+        const edgeToFace = {};
+
+        const addFaceEdge = (vA, vB, faceIdx) => {
+          const key = Math.min(vA, vB) + '-' + Math.max(vA, vB);
+          if (!edgeToFace[key]) edgeToFace[key] = [];
+          edgeToFace[key].push(faceIdx);
+        };
+
+        for (let t = 0; t < vertCount; t++) {
+          const i0 = hasIndex ? geo.index.getX(t * 3) : t * 3;
+          const i1 = hasIndex ? geo.index.getX(t * 3 + 1) : t * 3 + 1;
+          const i2 = hasIndex ? geo.index.getX(t * 3 + 2) : t * 3 + 2;
+          addFaceEdge(i0, i1, t);
+          addFaceEdge(i1, i2, t);
+          addFaceEdge(i2, i0, t);
+        }
+
+        // Build face adjacency from shared edges
+        for (const [key, faces] of Object.entries(edgeToFace)) {
+          for (let i = 0; i < faces.length; i++) {
+            for (let j = i + 1; j < faces.length; j++) {
+              const fa = faces[i], fb = faces[j];
+              if (!faceAdj[fa]) faceAdj[fa] = new Set();
+              if (!faceAdj[fb]) faceAdj[fb] = new Set();
+              faceAdj[fa].add(fb);
+              faceAdj[fb].add(fa);
+            }
+          }
+        }
+
+        // Map sample points to edges via face adjacency
+        const faceToSamples = {};
+        for (let i = 0; i < N; i++) {
+          const f = faceIndices[i];
+          if (!faceToSamples[f]) faceToSamples[f] = [];
+          faceToSamples[f].push(i);
+        }
+
+        const indices = [];
+        const used = new Set();
+        for (let fa = 0; fa < vertCount; fa++) {
+          const neighbors = faceAdj[fa];
+          if (!neighbors) continue;
+          const samplesA = faceToSamples[fa];
+          if (!samplesA) continue;
+
+          for (const fb of neighbors) {
+            const samplesB = faceToSamples[fb];
+            if (!samplesB) continue;
+            for (const sa of samplesA) {
+              for (const sb of samplesB) {
+                const key = Math.min(sa, sb) + '-' + Math.max(sa, sb);
+                if (!used.has(key)) {
+                  used.add(key);
+                  indices.push(sa, sb);
+                }
+              }
+            }
+          }
+        }
+
+        return indices;
+      }
+
+      /**
+       * Normalize points to fit within a unit sphere bounding volume,
+       * centered at origin.
+       */
+      function normalizeToUnitSphere(points) {
+        if (points.length === 0) return [];
+        let cx = 0, cy = 0, cz = 0;
+        for (const p of points) { cx += p.x; cy += p.y; cz += p.z; }
+        cx /= points.length; cy /= points.length; cz /= points.length;
+
+        let maxDist = 0;
+        for (const p of points) {
+          const d = Math.hypot(p.x - cx, p.y - cy, p.z - cz);
+          if (d > maxDist) maxDist = d;
+        }
+
+        if (maxDist === 0) return points;
+        const scale = 1.0 / maxDist;
+        return points.map(p => ({
+          x: (p.x - cx) * scale,
+          y: (p.y - cy) * scale,
+          z: (p.z - cz) * scale,
+        }));
+      }
+
+      /**
+       * Convert {x,y,z}[] to Float32Array matching icoGeo format.
+       */
+      function pointsToFloat32Array(points) {
+        const arr = new Float32Array(points.length * 3);
+        for (let i = 0; i < points.length; i++) {
+          arr[i * 3]     = points[i].x;
+          arr[i * 3 + 1] = points[i].y;
+          arr[i * 3 + 2] = points[i].z;
+        }
+        return arr;
+      }
+
+      return { sampleFromMesh, topologyEdges, normalizeToUnitSphere, pointsToFloat32Array };
+    })();
+```
+
+### Step 2: Rewrite `loadShapeGLB` (line ~1051)
+
+Replace the current function. For primitive shapes (cube, cylinder, pyramid, torus, sphere), build a Three.js geometry, wrap it in a temporary Mesh, sample via `SurfaceMorphEngine`, then dispose:
+
+```javascript
+    async function loadShapeGLB(name) {
       let geo;
       switch (name) {
-        case 'cube':     geo = new THREE.BoxGeometry(1, 1, 1, 12, 12, 12); break;
-        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 40, 1); break;
+        case 'cube':     geo = new THREE.BoxGeometry(1, 1, 1, 20, 20, 20); break;
+        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 48, 1, true); break;
         case 'pyramid':  geo = new THREE.ConeGeometry(0.5, 1.0, 4, 1); break;
-        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, 20, 60); break;
+        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, 32, 80); break;
         default: return null;
       }
-      const pos = geo.attributes.position;
-      const vertCount = pos.count;
 
-      // Sample shape surface at each Fibonacci direction → 478 morph targets
-      const targets = new Array(NUM);
-      for (let i = 0; i < NUM; i++) {
-        let bestD = Infinity, bestJ = 0;
-        const ip = icoPoints[i];
-        for (let j = 0; j < vertCount; j++) {
-          const dx = ip.x - pos.getX(j), dy = ip.y - pos.getY(j), dz = ip.z - pos.getZ(j);
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 < bestD) { bestD = d2; bestJ = j; }
-        }
-        targets[i] = { x: pos.getX(bestJ), y: pos.getY(bestJ), z: pos.getZ(bestJ) };
-      }
-      shapeTargets = targets;
+      // Wrap in mesh for MeshSurfaceSampler (requires Mesh, not raw geometry)
+      const mat = new THREE.MeshBasicMaterial();
+      const mesh = new THREE.Mesh(geo, mat);
 
-      // Compute triangular nearest-neighbor edges for this shape's point cloud
-      const shapeEdges = nearestNeighborEdges(targets, 6);
-      shapeTargetEdgeIndices = [];
-      for (const [a, b] of shapeEdges) shapeTargetEdgeIndices.push(a, b);
+      const { points, faceIndices } = SurfaceMorphEngine.sampleFromMesh(mesh, NUM);
+      const normalized = SurfaceMorphEngine.normalizeToUnitSphere(points);
+
+      shapeTargets = normalized;
+
+      // Build edges from original triangle topology
+      shapeTargetEdgeIndices = SurfaceMorphEngine.topologyEdges(geo, faceIndices, NUM);
 
       geo.dispose();
+      mat.dispose();
       return true;
     }
 ```
 
-### Step 3: Update Edge Index Switching
+**Changes from current:**
+- Increased subdivision (cube 20×20×20, cylinder 48 radial, torus 32×80) for smoother sampling
+- Cylinder uses `true` for open-ended (no caps — matches wireframe aesthetic)
+- `Sphere` case removed from the switch (sphere shape pill maps to icoPoints)
+- Sample positions + face indices via MeshSurfaceSampler (not Fibonacci→nearest-vertex)
+- Edges via triangle adjacency (not k-NN)
 
-The triangular wireframe is drawn by `icoEdges` and `icoEdgeGlow` (which share `icoEdgeGeo`). To switch the edge topology per mode, we update `icoEdgeGeo.setIndex()` (and `icoEdgeGlow.geometry.setIndex()`) when switching shapes.
+### Step 3: Update `switchShape` for sphere (line ~1092)
 
-Create a helper:
+When `name === 'sphere'`, `getTargetsForShape('sphere')` returns `icoPoints`. This is correct — no change needed. The sphere pill is the landing-state icosahedron, which already has perfect Fibonacci+k-NN geometry.
 
-```javascript
-    function setWireframeEdgeIndices(indices) {
-      icoEdgeGeo.setIndex(indices);
-      icoEdgeGeo.setDrawRange(0, indices.length);
-      // Neighbors and indices
-      icoEdgeGlow.geometry.setIndex(indices);
-      icoEdgeGlow.geometry.setDrawRange(0, indices.length);
-    }
+### Step 4: Face edge builder (re-add Delaunay)
+
+**File:** `index.html`, after `loadScan()` builds `faceLMs` (line ~713)
+
+The face is different from other shapes — it comes from landmark data, not a mesh. We use 2D Delaunay triangulation (same approach as the reverted commit):
+
+Add Delaunator CDN (before the module script):
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/delaunator@5.1.0/delaunator.min.js"></script>
 ```
 
-Calling points:
-- **Landing / sphere mode:** `setWireframeEdgeIndices(nnIndices)` (the original icosahedron edges)
-- **Face mode:** `setWireframeEdgeIndices(faceNNIndices)` (triangulated face edges)
-- **Primitive shapes:** `setWireframeEdgeIndices(shapeTargetEdgeIndices)` (sampled shape edges)
-- **GLB mode:** `setWireframeEdgeIndices(glbEdgeIndices)` (sampled GLB edges)
-
-### Step 4: Fix Opacity Logic in `morphToTarget()`
-
-Remove all references to `fillMesh`/`shapeWire` materials. Replace with the new unified opacity scheme:
+Replace `nearestNeighborEdges(faceLMs, 6)` with:
 
 ```javascript
-// Target opacities (unified wireframe-only scheme)
-const tEdgeOp = isFace ? 0.16 : (isSphere ? 0.25 : 0.20);
-const tGlowOp = isFace ? 0.05 : (isSphere ? 0.08 : 0.06);
-const tFcOp = isFace ? 0.75 : 0;
-const tFgOp = isFace ? 0.18 : 0;
-const tFmOp = isFace ? 0.55 : 0;
-const tKnOp = isFace ? 0.25 : 0;
+      // 2D Delaunay triangulation on XY projection of face landmarks
+      function delaunayEdgesFace(points) {
+        const coords = new Float64Array(points.length * 2);
+        for (let i = 0; i < points.length; i++) {
+          coords[i * 2] = points[i].x;
+          coords[i * 2 + 1] = points[i].y;
+        }
+        const del = new Delaunator(coords);
+        const edges = [];
+        const used = new Set();
+        const add = (a, b) => {
+          if (a === b) return;
+          const key = Math.min(a, b) + '-' + Math.max(a, b);
+          if (!used.has(key)) { used.add(key); edges.push([a, b]); }
+        };
+        for (let i = 0; i < del.triangles.length; i += 3) {
+          const a = del.triangles[i];
+          const b = del.triangles[i + 1];
+          const c = del.triangles[i + 2];
+          add(a, b); add(b, c); add(c, a);
+        }
+        return edges;
+      }
+
+      const faceNNEdges = delaunayEdgesFace(faceLMs);
 ```
 
-Remove all `smOp`, `swOp`, `tSmOp`, `tSwOp` variables and the shape group opacity updates.
+### Step 5: GLB file morphing (future-proofing)
 
-### Step 5: Fix `triggerTransform()` Opacity (lines 770-771)
-
-Change from fading edges to 0 to fading to face-mode edge opacity:
+When `morphToGLB()` is implemented (from the existing PLAN.md), instead of the triangle-area-sampling approach documented there, use `SurfaceMorphEngine`:
 
 ```javascript
-// Instead of:
-icoEdgeMat.opacity = 0.25 * (1 - t);
-icoEdgeGlowMat.opacity = 0.08 * (1 - t);
+async function morphToGLB(source, options = {}) {
+  // ... existing setup ...
 
-// Update to crossfade between sphere and face edge topologies:
-// First half: fade sphere edges out
-if (t < 0.5) {
-  icoEdgeMat.opacity = 0.25 * (1 - t * 2);
-  icoEdgeGlowMat.opacity = 0.08 * (1 - t * 2);
-} else {
-  // Second half: switch indices to face NN edges, fade in
-  icoEdgeMat.opacity = 0.16 * ((t - 0.5) * 2);
-  icoEdgeGlowMat.opacity = 0.05 * ((t - 0.5) * 2);
+  // Load GLB
+  const gltf = await new GLTFLoader().loadAsync(source);
+  const mesh = gltf.scene.children.find(c => c.isMesh);
+  if (!mesh) throw new Error('GLB contains no mesh');
+
+  // Sample uniformly
+  const { points, faceIndices } = SurfaceMorphEngine.sampleFromMesh(mesh, NUM);
+  const normalized = SurfaceMorphEngine.normalizeToUnitSphere(points);
+
+  // Build topology-aware edges
+  const targetEdges = SurfaceMorphEngine.topologyEdges(mesh.geometry, faceIndices, NUM);
+  const targetPos = SurfaceMorphEngine.pointsToFloat32Array(normalized);
+
+  // ... morph animation (same as existing plan) ...
 }
 ```
 
-Actually, a cleaner approach: at t=0.5, switch `icoEdgeGeo.setIndex()` from `nnIndices` to `faceNNIndices`, and crossfade the opacity. So at t<0.5 the sphere edges fade out, at t=0.5 the indices switch, at t>0.5 the face edges fade in.
+### Step 6: Remove unused code
 
-### Step 6: Fix `resetToLanding()` Opacity and Edge Restoration
+- Remove `nearestNeighborEdges` usage for anything except the sphere (landing state stays Fibonacci + k-NN)
+- Remove the `GLTFLoader` import from `loadShapeGLB` (no longer needed — primitives use built-in geometries)
+- The `shapeTargets` variable now stores `{x,y,z}[]` from normalized MeshSurfaceSampler output
 
-At lines 842-851, reverse the crossfade and restore `nnIndices` at the right time. Remove shape group opacity cleanup (since there's no more shape group).
+### Step 7: Handle the sphere shape pill
 
-### Step 7: Clean Up Shape Pills & State Management
+The shape row has a "sphere" pill. When clicked, `switchShape('sphere')` calls `getTargetsForShape('sphere')` which returns `icoPoints`. The edge indices should be `nnIndices` (the original icosahedron edges). Verify that `morphToTarget` uses `nnIndices` as `targetEdgeIndices` when `isSphere` is true — this already works (line ~1036).
 
-- Remove `shapeGroup` and `shapeWire` variables from the module scope
-- Remove shapeWire usage from `morphToTarget()`, `resetToLanding()`, render loop
-- Update `window.__scene` to expose `faceNNIndices`
-- Remove `buildShapeGeometry`'s original group creation code
-- Update `resetToLanding()` to clean up `shapeTargets` and `shapeTargetEdgeIndices` instead of shapeGroup
-
-### Step 8: Update GLB Morph Engine Plan to Match
-
-The existing `PLAN.md` Part 3 Step 3 already uses `GLBMorphEngine.edgesToIndexArray(glbData.edges)` and calls `icoEdgeGeo.setIndex()`. This is already correct — the GLB sampled points use `nearestNeighborEdges()` internally, producing triangular edges. No changes needed to the GLB morph plan itself.
-
-One addition to the GLB plan: when morphing from face mode to GLB, the edge indices need to transition from `faceNNIndices` to the GLB's sampled indices at the midpoint of the morph.
+Edge case: when switching from a sampled shape back to sphere, the indices swap from `shapeTargetEdgeIndices` (topology edges) to `nnIndices` (Fibonacci k-NN). This behaves the same as all other shape switches — the `morphToTarget` midpoint index swap handles it.
 
 ---
 
-## Affected Code Map
+## Performance Budget
 
-| Change | File | Lines | Action |
-|--------|------|-------|--------|
-| Remove fillMesh/fillMat | index.html | 953-959 | Delete |
-| Remove WireframeGeometry/shapeWire | index.html | 961-968 | Delete, replace with NN edges |
-| Remove shapeGroup/shapeWire vars | index.html | 236-237 | Delete `let shapeGroup`, `let shapeWire` |
-| Compute faceNNEdges | index.html | After 702 | Add |
-| Create setWireframeEdgeIndices() | index.html | After 528 | Add helper |
-| Update morphToTarget opacity | index.html | 1017-1101 | Rewrite opacity targets |
-| Update triggerTransform opacity | index.html | 739-797 | Rewrite edge crossfade |
-| Update resetToLanding opacity | index.html | 800-900 | Rewrite reverse crossfade |
-| Remove shapeGroup from reset | index.html | 868-869, 888 | Clean up references |
-| Expose faceNNIndices | index.html | 712-722 | Add to window.__scene |
-| GLB plan edge transition | PLAN.md | Step 3 | Add midpoint edge switch note |
+| Step | 1K triangles | 10K triangles | 100K triangles |
+|------|-------------|--------------|----------------|
+| `sampleFromMesh` (build) | <1ms | ~2ms | ~15ms |
+| `sampleFromMesh` (478 samples) | ~3ms | ~3ms | ~3ms |
+| `topologyEdges` (adjacency graph) | ~1ms | ~5ms | ~40ms |
+| `normalizeToUnitSphere` | <1ms | <1ms | <1ms |
+| **Total** | **~5ms** | **~10ms** | **~60ms** |
+
+All operations are CPU-bound, single-threaded, and well within the 16ms frame budget. No Web Worker needed.
+
+---
+
+## Design Coherence
+
+After this plan is implemented, every shape follows the same visual rules:
+
+| Shape | Points via | Edges via | Triangle quality |
+|-------|-----------|-----------|------------------|
+| Sphere (landing) | Fibonacci sphere | 3D k-NN (k=6) | Perfect on convex |
+| Face | Face landmarks (fixed) | 2D Delaunay on XY | Good ~ triangular |
+| Cube | MeshSurfaceSampler | Triangle adjacency | Uniform on surface |
+| Cylinder | MeshSurfaceSampler | Triangle adjacency | Uniform on surface |
+| Pyramid | MeshSurfaceSampler | Triangle adjacency | Uniform on surface |
+| Torus | MeshSurfaceSampler | Triangle adjacency | Uniform on surface |
+| GLB (future) | MeshSurfaceSampler | Triangle adjacency | Uniform on surface |
+
+Every shape renders as: **478 dots (shared icoCloud) + surface-following triangular wireframe (shared icoEdgeGeo) + optional contour overlay (face only).**
 
 ---
 
 ## Verification Checklist
 
-- [ ] Landing state: 478 blue dots on a unit sphere, connected by 6-NN triangulated edges (0.25 opacity)
-- [ ] Click → face: dots morph to face positions, edges transition to face NN triangulation (0.16 opacity), contour lines overlay at 0.75
-- [ ] Shape pills ("cube" etc.): no filled surface, no rectilinear wireframe — only triangular k-NN edges (0.20 opacity) + dots
-- [ ] All shape switches preserve triangular wireframe, never showing filled panels
-- [ ] Escape resets correctly: edges restore to sphere NN indices, opacity returns to 0.25
-- [ ] Scroll rotation works in all modes
-- [ ] Face viseme animation still shows contour lines + triangular edges simultaneously
-- [ ] No references to `fillMesh`, `fillMat`, `shapeWire`, `WireframeGeometry` remain in code
-- [ ] `shapeGroup` variable is fully removed
-- [ ] No console errors during morph transitions
+### Sampling Quality
+- [ ] Points are evenly distributed — no visible clustering on any primitive shape
+- [ ] 478 points on a cube: all 6 faces have roughly equal point counts
+- [ ] 478 points on a torus: inner and outer rings have proportional density
+- [ ] Points from MeshSurfaceSampler are properly normalized to unit sphere
+
+### Edge Quality
+- [ ] Cube edges stay on cube faces — no cross-face connections
+- [ ] Torus edges follow the ring surface — no bridge-through-hole edges
+- [ ] Cylinder edges wrap the body — no cap-to-side crossings (open-ended cylinder)
+- [ ] Face edges follow facial surface (Delaunay) — no cross-face interior edges
+- [ ] Sphere edges unchanged from current (Fibonacci k-NN)
+
+### Morph Integration
+- [ ] Shape pill switching works for all 6 shapes
+- [ ] Edge indices swap correctly at midpoint of each morph
+- [ ] Edge opacity maintained during and after morph (0.20-0.35 range)
+- [ ] `resetToLanding()` restores sphere nnIndices
+- [ ] Face contour lines still overlay correctly with Delaunay edges visible underneath
+- [ ] No console errors from disposed geometries
+
+### Performance
+- [ ] Shape switch completes in <50ms (including sampling + edge building)
+- [ ] No visible frame drop during morph animation (60fps maintained)
