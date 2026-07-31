@@ -22,8 +22,7 @@ Live at https://www.dassein.io
 | `requirements.txt` | Python deps for both local and Vercel |
 | `tests/e2e/dassein.spec.js` | Playwright E2E tests — landing state, transformation, agent mode, procedural spawn (tier-0 S1–S7 + tier-1 S8–S16), performance |
 | `playwright.config.js` | Playwright config — runs `python3 server.py` on port 3000 |
-| `docs/PLAN_TIER1.md` | Tier-1 shape system + repo cleanup plan — spec model, modifiers, blend, voice schema |
-| `docs/PLAN.md` | Redesign plan v4 — the spec that produced the current `index.html` |
+| `docs/PLAN.md` | Current plan — Tier 2 "Summoning": compound builder, curated spec library, DeepSeek spec synthesis, voice summoning |
 | `docs/MISSING_FEATURES.md` | Gap analysis audit — all 23 features confirmed implemented |
 
 ## Quick Start

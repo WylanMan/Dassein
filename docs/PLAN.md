@@ -1,309 +1,122 @@
-# Dassein — Wireframe Triangulation Architecture
+# Dassein — PLAN.md: Tier 2 "Summoning"
 
-## Goal
+Current authoritative plan. Supersedes the v4 redesign plan, PLAN_TIER1.md, and VOICEPLAN.md. The Tier-1 shape system (spec model, modifiers, blend, cached bases, GLB loading) is implemented in the working tree; step 0 finishes and commits it.
 
-Render any 3D object — procedural primitives, GLB models, face scans — as a **triangular mesh draped across its surface.** The mesh is formed by point-cloud dots and the wireframe edges that connect them. No filled surfaces, no edge-detected overlays, no model-native rectilinear wireframes. The final visual is always the same: a net of dots and lines that wraps the object's form.
+## Premise
 
-The triangulation must be **geometrically similar** — triangles of roughly equal size and shape, distributed uniformly across the surface — like the faces of a subdivided icosahedron. Denser where curvature demands it, but never random, never stretched, never bridging across empty space.
+The agent writes a shape's **DNA** (a spec); the client's Tier-1 pipeline synthesizes the form (build → weld → FPS → 478-point morph). Two sources, one data structure:
 
-The **icosahedron sphere** is the reference pattern. Every other shape — a cube, a torus, a face scan, an imported GLB model — should look like someone took that same icosahedral wireframe net and wrapped it around the new form. Same visual density, same triangle regularity, same point-to-edge relationship.
+1. A **curated spec library** — hand-written specs, deterministic, guaranteed legible, zero API, zero latency.
+2. **DeepSeek-flash spec synthesis** — the cache-miss handler for anything the library lacks.
 
-## Design Philosophy
+Quality bar is **identifiability, not fidelity**. The 478-point wireframe net forgives crudeness; the silhouette must read. A boxy hourglass that reads as an hourglass is a success.
 
-All shapes render through a **single rendering engine** with shared geometry buffers and a common morph pipeline. The canonical examples are the **icosahedron** and the **face** — both use nearest-neighbor edges on well-distributed points, producing the target pattern of geometrically similar triangles with uniform density. This pattern must extend to all shapes.
+## Hard guarantees
 
----
-
-## Rendering Layers
-
-Three concurrent layers share a single position buffer. The morph engine drives the position buffer; all layers follow automatically.
-
-| Layer | Type | Material | Role |
-|---|---|---|---|
-| Point cloud | `THREE.Points` | Additive blend, `opacity: 0.55` | 478 cyan dots — the "atoms" |
-| Wireframe edges | `THREE.LineSegments` | Opaque cyan, `depthTest: true` | The visible triangulation |
-| Edge glow | `THREE.LineSegments` | Opaque cyan, `depthTest: false` | Subtle bloom passthrough |
-
-The point cloud and edge glow share the position buffer by reference (`icoEdgeGlow.geometry.attributes.position = icoGeo.attributes.position`). The wireframe edges use a separate `icoEdgeGeo` geometry but its `.attributes.position` is set to the same `icoGeo.attributes.position` array — morphs write to one buffer and all three layers update.
+- **G1:** Tier-1 behavior untouched — spec path, pills, face/sphere/model semantics, blends stay as-is. Compound is purely additive.
+- **G2:** No new client-side runtime dependencies; all new deps (DeepSeek) live server-side.
+- **G3:** Every spawned form satisfies the ≥478 unique welded-verts guard; any failed summon degrades to a seeded abstract form + agent narration — never a crash.
 
 ---
 
-## Shared Position Buffer
+## Part A — Compound builder + curated library (ship first)
 
-```
-icoGeo (BufferGeometry)
- ├── attributes.position → positions (Float32Array[478*3])
- │
- ├── icoCloud (Points)          ← reads positions, renders dots
- ├── icoEdges (LineSegments)    ← reads positions via icoEdgeGeo, renders edges
- └── icoEdgeGlow (LineSegments) ← reads positions via cloned geometry, renders glow
-```
+### A1. Compound builder (`index.html`)
+Extend the spec grammar: `spec` gains optional `parts: [{type, pos, rot, scale, params, mods}]`.
+- Each part builds via existing `PROCEDURAL_BUILDERS` + `getBase`-style caching (composite parts key).
+- All part point sets merge **before** the weld → FPS step (same mechanism as `union`/`helix`), then FPS to 478 and `nearestNeighborEdges(6)` as today.
+- Parts live in a bounded work volume (±1.4r) so edges never bridge distant islands.
+- Route: `spec.parts` present → compound path; else existing single-type path. `window.__scene.spec` mirrors both.
 
-The face contour layer (`faceContourLines`, `faceContourGlow`, `faceMouthCavity`, `faceKeyNodes`, `faceIrisNodes`) has its own position buffer but is synced via `updateFaceGeometry(positions)` on every animation frame during morphs — it follows the shared buffer indirectly.
+### A2. Legibility grammar (LLM-positioning weakness mitigation)
+- **Orientation vocabulary:** `rot: 'up'|'flat'|'side'` presets + optional degrees — never raw Euler angles.
+- **Anchor-part pattern:** the first part is the anchor; others attach relative to it (Scenethesis pattern).
+- **Cap ≤ 12 parts.** More parts = more ways to become unreadable.
 
----
+### A3. Profile-parameterized builders
+- `latheBuilder` gains explicit `profile: [[y, r]...]` (vase/goblet/rocket/bowl become presets).
+- `extrudeBuilder` gains explicit `profile: [[x, y]...]` + depth (star/gear/cross/hexagon become presets).
+- No new builder types for v1 — parts + profiles + mods cover the simple-object vocabulary.
 
-## Point Distribution
-
-Points define where the dots render and where edges connect. Each mode has its own point source.
-
-### Landing (icosahedron sphere)
-
-- **Source:** `fibonacciSphere(478)` — deterministic, evenly distributed points on a unit sphere
-- **Property:** Euclidean neighbor distances are near-constant; the distribution is visually uniform with no clusters or gaps
-- **Works because:** Sphere is convex, so Euclidean distance ≈ geodesic distance
-
-### Face
-
-- **Source:** 478 3D landmarks from `data/robota_scan.json`, scaled by `FACE_SCALE`
-- **Property:** Dense in high-curvature regions (nose, lips, eyes), sparse on flat surfaces (forehead). Not uniform but follows the natural topology of a face scan
-- **Works because:** The face is roughly convex at this scale, so k-NN Euclidean edges still produce a reasonable surface triangulation
-
-### Procedural shapes (cube, cylinder, pyramid, torus)
-
-**Current (broken):**
-- `MeshSurfaceSampler` produces 478 random area-proportional samples
-- Random distribution means clusters and gaps; pattern changes every call
-- Fixed 478 points ignores surface area (cube and torus get the same count)
-
-**Target:**
-- Use the procedural geometry's own vertices directly — the geometry already has uniform vertex distribution at the given subdivision level
-- Point count scales with surface area naturally (higher subdivision → more vertices)
-- No sampling step needed — the geometry is the point source
-
-### Imported GLB models
-
-**Target:**
-- Load the model, extract the mesh geometry
-- Apply an isotropic remesh step to produce uniformly sized triangles with controlled density
-- Use the remeshed vertices as point positions and the remeshed triangle edges as wireframe edges
-- Density parameter controls the point/triangle count, scaling with object surface area
-- This produces the same "icosahedron-like" visual pattern on any model
+### A4. Curated spec library (12–20 specs)
+Hand-written storytelling specs: hourglass, throne, labyrinth, lantern, key, door, chain, monument, stone arch (bridge), chrysalis, threshold gate, well, sundial, crown, ship, altar. Perfect every time — this is the demo-day deliverable. The library's data structure is identical to the LLM-tier cache entries, and the library doubles as the few-shot example bank in the LLM system prompt.
 
 ---
 
-## Edge Generation
+## Part B — LLM synthesis tier (DeepSeek)
 
-Edges define which point pairs are connected by visible lines. This is the most critical design decision — the wrong edge model produces irregular, wrong-looking wireframes.
+### B1. `POST /api/summon {concept, seed?}` (`server.py` + `api/index.py`)
+Returns a **JSON spec** (never geometry — the client owns building):
+1. Cache lookup by canonical `id` + seed (`.cache/specs/` dev / KV prod). Specs are a few KB — trivial to cache.
+2. Miss → DeepSeek call (OpenAI-compatible; `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL` from env; `response_format: json_object`). System prompt = spec grammar + simple-forms contract + curated library as worked examples. Output includes a **canonical `id`** the LLM chooses ("hourglass_wide") — the cache key, so "a chair" and "chair" collapse to one entry.
+3. Validation: schema, numeric ranges, ≤12 parts, orientation vocabulary, profile sanitization (winding order, no self-intersection, no negative radii). Fail → **one fix-prompt retry** ("your output failed: <error>. Correct it."); second fail → 422 with an abstractify directive.
+4. Cache the spec, return `{spec, id, cached}`.
 
-### Current implementations
+### B2. Seed policy
+- Default: `seed = hash(canonical_id)` → stable, cacheable, deterministic.
+- "Different" / "surprise me" → seed+1 (jitter is the only seed-sensitive mod).
+- This is what makes the cache actually hit: pinned seeds, not random ones.
 
-#### k-NN Euclidean edges (`nearestNeighborEdges(points, k)`)
-
-For each point, connect to its `k` nearest neighbors by straight-line 3D distance. Deduplicate.
-
-**Works well for:** Sphere (convex, Euclidean ≈ geodesic), face (roughly convex, dense points)
-**Fails for:** Torus (connects through hole), concave surfaces, any shape where surface distance diverges from straight-line distance
-
-#### Spherical Delaunay edges (`sphericalDelaunayEdges(points)`)
-
-Project all 3D points to spherical coordinates `(theta, phi)`, run 2D Delaunay triangulation on those coordinates, extract triangle edges.
-
-**Used in:** `loadShapeGLB()` for procedural shapes
-**Problem:** Every point is projected to a sphere before triangulating. The resulting edges have no relationship to the actual 3D surface. On a cube, points on the front face get connected to points on the back face because their `(theta, phi)` is nearby. On a torus, the triangulation bridges across the hole. On a cylinder, top-cap points connect to bottom-cap points. The output is geometrically meaningless.
-
-**Why it's in the codebase:** It was chosen in PLAN.md v6 as a "fix" to replace the even worse nearest-vertex approach from v4/v5. It eliminated the filled-mesh layer but introduced a worse triangulation model.
-
-### Target edge model: intrinsic surface edges
-
-The edge set must respect the actual surface geometry. There are three correct approaches:
-
-#### A. Native geometry edges (simplest, preferred for procedural shapes)
-
-Use the geometry's own triangle indices directly. A `BoxGeometry(0.5, 0.5, 0.5, 8, 8, 8)` already has uniformly distributed vertices and proper surface-respecting triangles. Extract the vertex positions → point cloud positions. Extract the unique edges from the index array → wireframe edges.
-
-**Properties:**
-- Always surface-correct (the geometry defines the surface)
-- Triangles are geometrically similar (controlled by subdivision)
-- Point count scales with subdivision level
-- Zero additional computation — no sampling, no triangulation, no projection
-
-#### B. Geodesic k-NN edges
-
-For each point, compute geodesic (surface-following) distance to every other point on the mesh using Dijkstra or heat method on the mesh graph. Connect to the k nearest. This generalizes the Euclidean k-NN pattern to arbitrary surfaces.
-
-**When to use:** When you want the same k-NN visual pattern as the icosahedron on an arbitrary mesh, but the raw mesh vertices are too dense or irregular.
-
-#### C. Isotropic remesh → native edges
-
-Run an isotropic remeshing algorithm (e.g., Botsch & Kobbelt 2004) on the input geometry to produce uniformly sized, near-equilateral triangles. Then use the remeshed geometry's vertices and edges directly (same as approach A).
-
-**Properties:**
-- Guaranteed uniform triangles on any input
-- Controllable edge length target
-- Surface area → point count relationship is deterministic
-- The canonical approach for "make this arbitrary model look like an icosahedron"
+### B3. Client-side build + validation gate
+Build the spec through the existing pipeline; post-build sanity: all-finite, spread within volume, non-degenerate. Fail → seeded abstract form + "it resisted capture; here is its abstract form." The fallback is the quality system, not an error.
 
 ---
 
-## Edge Index Swap Mechanism
+## Part C — Voice + UX
 
-All wireframe edges share the same `icoEdgeGeo` (and its glow twin). Switching between modes means swapping which index array is active:
+### C1. New tool `summon_object {concept}` (`voice-realtime.js` + `index.html`)
+- `INSTRUCTIONS` decision rule: known `OBJECT_TYPES` → `spawn_object`; anything specific, novel, or metaphorical → `summon_object`.
+- **Simple-forms contract:** prefer solid, simple, stylized forms; avoid thin/lacy/hollow/mechanically complex requests; if the request is fragile, narrate and summon its essence (bridge → stone arch).
+- Concept is treated as **data** in the prompt, not instructions (injection hygiene).
 
-```
-icoEdgeGeo.setIndex(targetIndices);
-icoEdgeGlow.geometry.setIndex(targetIndices);
-```
+### C2. Summon flow
+- t=0: stand-in morph (procedural blob, `seed = hash(concept)`) — the gathering-magic moment.
+- Agent narrates during the wait; voice keeps flowing.
+- On spec arrival: `interruptMorph()` → morph into built targets.
+- Latency budget: ~1–2s build, 2–5s DeepSeek, worst case +5s retry; hard cap ~8s then narrate-and-continue (leave stand-in, absorb miss later).
 
-| Mode | Edge index array | Source |
-|---|---|---|
-| Landing (sphere) | `nnIndices` | `nearestNeighborEdges(icoPoints, 6)` — precomputed at init |
-| Face | `faceNNIndices` | `nearestNeighborEdges(faceLMs, 6)` — precomputed at scan load |
-| Solid shapes | `shapeTargetEdgeIndices` | → should come from geometry's native indices, not Delaunay |
-
-### Swap timing
-
-All morph transitions use the same pattern:
-- **t < 0.5:** Old edge indices active, opacity crossfading out
-- **t = 0.5:** `setWireframeEdgeIndices(targetIndices)` swaps the index buffer
-- **t > 0.5:** New edge indices active, opacity crossfading in
-
-This avoids popping — the position buffer is mid-morph at t=0.5, so both the old and new edge sets would look wrong. The index swap happens invisibly while opacity is at its minimum.
+### C3. Re-roll loop (fixes misreads, not polish)
+- "Different" → seed+1 re-summon.
+- "Like that but X" → refined concept re-summon (new canonical id, new entry).
 
 ---
 
-## Opacity Scheme
+## Part D — Quality contract (identifiability)
 
-Unified wireframe-only scheme. No solid layer remains.
-
-| Mode | Wireframe edges | Edge glow | Point cloud | Contours | Mouth | Key nodes | Iris nodes |
-|---|---|---|---|---|---|---|---|
-| Landing (sphere) | 0.28 | 0.10 | 0.55 | 0 | 0 | 0 | 0 |
-| Face | 0.35 | 0.12 | 0.55 | 0.75 | 0.55 | 0.25 | 1.0/0.15 |
-| Solid shapes | 0.22 | 0.08 | 0.55 | 0 | 0 | 0 | 0 |
-
-Face mode gets higher wireframe opacity (0.35 vs 0.22) because the face contour lines overlay on top and the wireframe is a secondary visual element. In solid shape mode, the wireframe is the primary visual element and lower opacity reads better against the point cloud.
-
-Iris nodes follow their own rule: opaque black dot (1.0) + subtle white glow (0.15) in face mode, hidden (0) otherwise.
+- **D1.** Bar: shown a screenshot cold, a stranger can say what it is. Not beauty, not fidelity.
+- **D2. Spike gate** (dev-time, before endpoint work): 10 concepts → ≥7 build → ≥4 identifiable cold. Fail → **kill switch**: curated library + Tier-1 vocabulary only; LLM tier demoted to an experiment.
+- **D3.** The abstractify fallback absorbs every miss — a miss becomes a narrated abstract form, never a broken render.
 
 ---
 
-## Morph Pipeline
+## Part E — Deferred
 
-Three morph paths exist:
-
-### 1. Landing → Face (`triggerTransform()`)
-
-Source positions: `icoPoints` (Fibonacci sphere)
-Target positions: `faceLMs` (face scan landmarks)
-Edge swap: `nnIndices` → `faceNNIndices` at t=0.5
-Duration: 2.0s
-Camera: z=6 → z=4.5
-UI: overlay fades out, agent-ui and nav fade in
-
-### 2. Shape switching (`switchShape()` → `morphToTarget()`)
-
-Source positions: current position buffer state
-Target positions: `getTargetsForShape(name)` — `faceLMs` for face, `icoPoints` for sphere, `shapeTargets` for solids
-Edge swap: `nnIndices`/`faceNNIndices`/`shapeTargetEdgeIndices` at t=0.5
-Duration: 1.5s
-Resolves `shapeTargets` via `loadShapeGLB()` on first access
-
-### 3. Agent → Landing (`resetToLanding()`)
-
-Source positions: current position buffer state
-Target positions: `icoPoints`
-Edge swap: current → `nnIndices` at t=0.5
-Duration: 1.5s
-Camera: current z → z=6
-UI: overlay fades in, agent-ui and nav fade out
-
-### Common morph function (`morphToTarget(targets, shapeName, duration)`)
-
-The unified morph function:
-1. Snapshots current opacities for all layers
-2. Computes target opacities based on `shapeName`
-3. Runs a GSAP tween interpolating positions and crossfading opacities
-4. Swaps edge indices at t=0.5
-5. On completion: snaps positions to exact targets, sets final opacities, sets state
+- **E1.** Organic tier (Tripo text-to-3D + Vercel Blob GLB cache) for real-world/organic asks ("a fox", "an oak tree"). Documented, not built. `/api/summon` schema leaves room for `mode: 'organic'` so nothing needs rework.
 
 ---
 
-## Shape Architecture
+## Part F — Infra & tests
 
-### Current shape set
-
-```javascript
-const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus'];
-```
-
-All non-face, non-sphere shapes route through `loadShapeGLB(name)` which:
-1. Creates a procedural geometry with hardcoded subdivision
-2. Runs `MeshSurfaceSampler` to get 478 random surface samples
-3. Runs `sphericalDelaunayEdges` on the samples for edge indices
-4. Disposes the temp geometry
-
-### Target shape architecture
-
-Shapes should use a **geometry-first** approach:
-
-```
-loadShape(name)
-  ├── procedural shapes (cube, cylinder, pyramid, torus, sphere):
-  │     1. Create geometry at controlled subdivision
-  │     2. Extract vertices → shapeTargets (point positions)
-  │     3. Extract unique edges from geometry.index → shapeTargetEdgeIndices
-  │     4. Point count = vertex count (varies with subdivision)
-  │
-  └── imported GLB models:
-        1. Load mesh via GLTFLoader
-        2. Extract geometry
-        3. Apply isotropic remesh to uniform triangle size
-        4. Extract vertices → point positions
-        5. Extract edges → wireframe edge indices
-```
-
-The key difference: **no sampling, no Delaunay, no projection.** The geometry itself is the truth.
+- **F1.** `.env.example` += `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (default `deepseek-chat`, confirmed by spike), `DEEPSEEK_BASE_URL`. `requirements.txt` unchanged (httpx suffices). Dev cache dir `.cache/` gitignored.
+- **F2.** Verify `BufferGeometryUtils.mergeGeometries` is reachable via the import-map addons path; else hand-roll a Float32Array concat (~10 lines).
+- **F3.** Tests (`tests/e2e/dassein.spec.js`), DeepSeek mocked by pointing `DEEPSEEK_BASE_URL` at a local stub:
+  - **S17** `/api/summon` returns a valid spec
+  - **S18** compound spec builds ≥478 verts and morphs clean (fixture specs, no API)
+  - **S19** invalid spec → fix-retry → abstract fallback path
+  - **S20** `summon_object` voice tool end-to-end (stub)
+  - **S21** cache hit returns canonical spec with no API call
+  - Plus `python3 server.py` smoke.
 
 ---
 
-## Point Count Scaling
+## Execution order (commit after each)
 
-The current fixed 478 is wrong. Point count should scale with object surface area to maintain consistent visual density across all shapes.
+0. **Ship Tier 1** — A4 voice schema (speakable params), A5 (`blob`/`helix` + family params), C (S8–S13), B5 (AGENTS.md). Working tree has the rest uncommitted.
+1. **A1 + A3** — compound builder + profile params (client-side, `__testHooks`-verifiable).
+2. **A4** — curated spec library → demo day: voice summons 10+ curated objects.
+3. **D2** — DeepSeek spike against the gate (verdict gates everything after).
+4. **B1 + B2 + B3** — `/api/summon` + cache + validator + fix-retry + S17/S19/S21.
+5. **C1 + C2 + C3** — voice tool, stand-in morph, narration, re-roll + S18/S20.
+6. **F3 full suite** — AGENTS.md + docs update, deploy.
 
-| Shape | Surface area (approx) | Appropriate point count |
-|---|---|---|
-| Icosahedron sphere (r=1) | 12.57 | 478 (baseline) |
-| Cube (0.5³) | 1.5 | ~60 |
-| Torus (R=0.45, r=0.18) | 3.2 | ~120 |
-| Face (scaled) | ~3.0 | 478 (fixed by scan) |
-| Imported GLB | varies | proportional to area |
-
-For procedural shapes, subdivision level controls density: `new BoxGeometry(0.5, 0.5, 0.5, N, N, N)` gives `(N+1)² × 6` vertices. For GLB models, a remesh edge-length target controls density.
-
-The icoCloud `THREE.Points` and the edge `LineSegments` have no fixed vertex count requirement — `BufferGeometry` handles arbitrary sizes. The morph engine needs to handle variable point counts, or at minimum, the shape-specific geometries get their own buffer and the morph crossfades between separate rendering groups.
-
----
-
-## What v6 Got Wrong (Post-Mortem)
-
-PLAN.md v6 correctly identified the need to remove the solid layer and unify the opacity scheme. But it inherited two flawed assumptions from v4/v5 and added one new mistake:
-
-1. **Fixed 478 points for everything** — inherited from the original icosahedron design. Never questioned.
-2. **Random sampling via MeshSurfaceSampler** — inherited from v5. Introduces non-deterministic clustering.
-3. **Spherical Delaunay triangulation** — the v6-introduced mistake. Geometrically unsound for non-spherical shapes. Projects all geometry to a sphere, losing the actual surface topology.
-
-The correct design principle: **the geometry owns its triangulation.** Use the mesh's vertices for point positions and the mesh's triangle edges for wireframe edges. No sampling, no projection, no external triangulation algorithm.
-
----
-
-## Verification Checklist
-
-### Current (v6 as-implemented)
-- [x] No solid layer code remains
-- [x] Unified wireframe-only opacity scheme in `morphToTarget()`
-- [x] `loadShapeGLB()` uses MeshSurfaceSampler + sphericalDelaunayEdges
-- [x] Edge index swap at t=0.5 in all morph paths
-- [x] Landing sphere: Fibonacci points + k-NN edges
-- [x] Face mode: scan landmarks + k-NN edges + contour overlays
-
-### Target (v7 geometry-first)
-- [ ] Procedural shapes use native geometry edges, not Delaunay
-- [ ] Point count scales with surface area per shape
-- [ ] `sphericalDelaunayEdges()` removed
-- [ ] `MeshSurfaceSampler` removed (or reserved for GLB remesh fallback)
-- [ ] GLB model loading pipeline with isotropic remesh
-- [ ] Morph engine supports variable point counts
-- [ ] Shape wireframe triangles are geometrically similar (icosahedron-like)
-- [ ] Visual density is consistent across all shapes
-- [ ] Edge generation respects actual surface geometry (not spherical projection)
+**Risks:** DeepSeek format drift (pinned prompt, strict validator, one retry, tier-0 fallback); compound edge-bridging (bounded volume + gate); coordinate misalignment (orientation vocab + anchor + caps). Kill switch: D2.
