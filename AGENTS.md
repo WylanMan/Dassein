@@ -10,20 +10,21 @@ Live at https://www.dassein.io
 
 | File | Role |
 |---|---|
-| `index.html` | Entire app — HTML, inline CSS, inline Three.js module. Single page with landing → agent transition |
-| `voice-realtime.js` | S2S voice client — WebRTC peer connection + `oai-events` data channel to OpenAI Realtime, ephemeral-token auth, client-side tool execution, output-audio RMS tap for visemes |
+| `index.html` | Entire app — HTML, inline CSS, inline Three.js module. Single page with landing → agent transition. Tier-1 shape system (spec model, modifiers, blend) |
+| `voice-realtime.js` | S2S voice client — WebRTC peer connection + `oai-events` data channel to OpenAI Realtime, ephemeral-token auth, client-side tool execution (`spawn_object`, `web_search`, `get_time`, `get_weather`), output-audio RMS tap for visemes |
 | `voice-conversation.js` | Thin event-wiring layer — maps realtime events to UI state (idle/listening/thinking/speaking) and chat messages |
 | `blogs.html` | Standalone blog page ("Forest Paths") — philosophical essays |
 | `wylan.html` | Personal portfolio/bio page |
 | `data/robota_scan.json` | 5MB face mesh (478 landmarks, blendshapes, expressions). Fetched at runtime |
-| `api/index.py` | Vercel serverless FastAPI backend — `/api/chat`, `/api/realtime/session`, `/api/health`, `/api/save-scan`, `/api/load-scan` |
+| `api/index.py` | Vercel serverless FastAPI backend — `/api/realtime/session`, `/api/health` |
 | `server.py` | Local dev server (Python stdlib) with same API endpoints as `api/index.py` |
 | `vercel.json` | Routes `/api/*` → serverless function |
 | `requirements.txt` | Python deps for both local and Vercel |
-| `tests/e2e/dassein.spec.js` | Playwright E2E tests for landing state, transformation, agent mode, performance |
+| `tests/e2e/dassein.spec.js` | Playwright E2E tests — landing state, transformation, agent mode, procedural spawn (tier-0 S1–S7 + tier-1 S8–S13), performance |
 | `playwright.config.js` | Playwright config — runs `python3 server.py` on port 3000 |
-| `PLAN.md` | Redesign plan v4 — the spec that produced the current `index.html` |
-| `MISSING_FEATURES.md` | Gap analysis audit — all 23 features confirmed implemented |
+| `docs/PLAN_TIER1.md` | Tier-1 shape system + repo cleanup plan — spec model, modifiers, blend, voice schema |
+| `docs/PLAN.md` | Redesign plan v4 — the spec that produced the current `index.html` |
+| `docs/MISSING_FEATURES.md` | Gap analysis audit — all 23 features confirmed implemented |
 
 ## Quick Start
 
@@ -40,11 +41,19 @@ Or serve statically with `npx serve .`.
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| POST | `/api/chat` | `{"messages": [...], "stream": bool, "tools": bool}` | `{"response": "..."}` or SSE token stream |
 | POST | `/api/realtime/session` | — | `{"token": "ek_...", "expires_at": ...}` — ephemeral Realtime token. Never returns the master API key |
 | GET | `/api/health` | — | `{"status": "ok", "agent": "live"}` |
-| POST | `/api/save-scan` | JSON scan data | `{"status": "saved"}` |
-| GET | `/api/load-scan` | — | scan JSON or `{"error": "no saved scan"}` |
+
+## Tier-1 shape system
+
+- Unified spec: `{ type, size='medium', params={}, mods={}, blend={with, ratio}, seed, url }`.
+- Bases are welded + FPS'd once and cached by `(type, params)` only (bounded ~26 entries). Mods, blend, size, and edges are cheap 478-point array ops recomputed per spawn. `force` clears a base key.
+- Modifiers run pointwise on target arrays post-FPS in fixed order: squash → bend → twist → taper → bulge → spherize → jitter. All functions of normalized height/radius.
+- Blend is a 478-point lerp over size-normalized cached bases; `ratio=0` ≈ A exactly, size applied last.
+- **G1:** each name lands at its current absolute size — native primitives (cube/cylinder/pyramid/cone/torus) keep their geometry scale; every other builder is normalized to the 0.55r bulk.
+- **G2:** `object:'model'` without a `url` loads the Duck (default); with `url` it loads any `.glb` via `loadGLBFromURL` (CORS failures return a helpful error).
+- Builder-conformance rule: every builder must produce ≥478 unique welded verts (FPS guard stays loud).
+- Pills and voice route procedural names through the same spec path; `switchShape` keeps only face/sphere/model semantics. `window.__scene.spec` mirrors the active spec.
 
 ## Key conventions
 
@@ -52,8 +61,7 @@ Or serve statically with `npx serve .`.
 - Three.js loaded from CDN via import map (`three@0.152.0`)
 - GSAP loaded from CDN for animations
 - Fonts via Google Fonts (Space Grotesk + Caveat)
-- Voice: browser ↔ OpenAI Realtime (`gpt-realtime-mini`) over WebRTC; server only mints ephemeral tokens. Turn-taking/interruption are native (`server_vad` + `interrupt_response`); tools (`switch_shape`, `web_search`, `get_time`, `get_weather`) execute client-side over the data channel. Visemes are driven by the real output-audio RMS, not text guesses
-- Text LLM chain (`/api/chat` only): DeepSeek → OpenAI → Anthropic → hardcoded fallbacks
+- Voice: browser ↔ OpenAI Realtime (`gpt-realtime-mini`) over WebRTC; server only mints ephemeral tokens. Turn-taking/interruption are native (`server_vad` + `interrupt_response`); tools (`spawn_object`, `web_search`, `get_time`, `get_weather`) execute client-side over the data channel. Visemes are driven by the real output-audio RMS, not text guesses
 - Face scan data at `data/robota_scan.json` (478-vertex mesh from real 3D scan)
 
 ## Design system
@@ -69,4 +77,4 @@ Or serve statically with `npx serve .`.
 vercel --prod
 ```
 
-Env vars required in Vercel (or `.env` locally): `OPENAI_API_KEY` (required for voice), `DEEPSEEK_API_KEY`, `LLM_PROVIDER`, `DEEPSEEK_MODEL` (text chat).
+Env vars required in Vercel (or `.env` locally): `OPENAI_API_KEY` (required for voice).

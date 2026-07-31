@@ -1698,7 +1698,7 @@
         const name = pill.dataset.shape;
         interruptMorph();
         if (name === 'face' || name === 'sphere' || name === 'model') {
-          switchShape(name);
+          switchShape(name).catch(() => {});
         } else {
           spawnObject({ type: name, size: 'medium' });
         }
