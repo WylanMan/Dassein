@@ -1,8 +1,13 @@
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+try:
+    from .summon import summon, SummonError  # package context (local uvicorn)
+except ImportError:  # pragma: no cover
+    from summon import summon, SummonError  # Vercel runtime (api/ on sys.path)
 
 app = FastAPI(title="Dassein API")
 
@@ -53,3 +58,27 @@ async def realtime_session():
     if not token:
         return JSONResponse({"error": "Realtime session response missing token"}, status_code=502)
     return {"token": token, "expires_at": data.get("expires_at")}
+
+
+@app.post("/api/summon")
+async def api_summon(request: Request):
+    """Synthesize a spec for a concept (B1). Concept -> JSON spec, cached by
+    canonical id + seed. Never returns geometry; never exposes keys."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    body = body or {}
+    concept = body.get("concept")
+    if not concept or not str(concept).strip():
+        return JSONResponse({"error": "concept is required"}, status_code=400)
+    if not os.environ.get("DEEPSEEK_API_KEY", ""):
+        return JSONResponse(
+            {"error": "DeepSeek API key not configured", "abstractify": True}, status_code=503
+        )
+    try:
+        return await summon(concept, body.get("seed"))
+    except SummonError as e:
+        return JSONResponse(
+            {"error": str(e), "abstractify": bool(e.abstractify)}, status_code=422
+        )

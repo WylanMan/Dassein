@@ -10,9 +10,9 @@ module.exports = defineConfig({
     headless: true,
   },
   webServer: {
-    command: 'python3 server.py',
+    command: 'python3 tests/support/dev_server.py',
     port: 3000,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 10000,
   },
 });

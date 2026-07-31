@@ -1,9 +1,14 @@
 import json
 import os
+import asyncio
+import sys
 import mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "api"))
+from summon import summon, SummonError  # noqa: E402
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -62,10 +67,35 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/realtime/session":
             self._handle_realtime_session()
+        elif path == "/api/summon":
+            self._handle_summon()
         elif path == "/api/health":
             self._json(200, {"status": "ok", "agent": "live"})
         else:
             self._json(404, {"error": "not found"})
+
+    def _handle_summon(self):
+        """Synthesize a spec for a concept (B1). Concept -> JSON spec, cached
+        by canonical id + seed. Never returns geometry; never exposes keys."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except Exception:
+            self._json(400, {"error": "invalid JSON body"})
+            return
+        concept = body.get("concept")
+        if not concept or not str(concept).strip():
+            self._json(400, {"error": "concept is required"})
+            return
+        if not os.environ.get("DEEPSEEK_API_KEY", ""):
+            self._json(503, {"error": "DeepSeek API key not configured", "abstractify": True})
+            return
+        try:
+            result = asyncio.run(summon(concept, body.get("seed")))
+        except SummonError as e:
+            self._json(422, {"error": str(e), "abstractify": bool(e.abstractify)})
+            return
+        self._json(200, result)
 
     def _handle_realtime_session(self):
         """Mint a short-lived ephemeral token for the browser's Realtime WebRTC

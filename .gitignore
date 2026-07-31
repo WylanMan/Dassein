@@ -10,6 +10,8 @@ node_modules/
 .playwright-mcp/
 data/*
 !data/robota_scan.json
+!data/curated_specs.json
+.cache/
 logs/
 test-results/
 landing-state.png
