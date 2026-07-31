@@ -1,11 +1,6 @@
 const { test, expect } = require('@playwright/test');
 
 const BASE = 'http://localhost:3000';
-const ALLOWED_TYPES = [
-  'cube', 'cylinder', 'pyramid', 'cone', 'torus', 'gem', 'rock', 'crystal',
-  'pebble', 'blob', 'vase', 'goblet', 'rocket', 'bowl', 'star', 'gear',
-  'cross', 'hexagon', 'polygon', 'knot', 'spiral', 'helix',
-];
 
 async function summon(page, body) {
   return page.request.post(`${BASE}/api/summon`, { data: body });
@@ -16,12 +11,12 @@ async function stubCalls(page) {
   return (await r.json()).count;
 }
 
-test.describe('Summon API (tier 2, LLM tier)', () => {
+test.describe('Summon API (tier 2, LLM tier — grammar v2)', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE);
   });
 
-  test('S17: /api/summon returns a valid spec', async ({ page }) => {
+  test('S17: /api/summon returns a valid grammar-v2 spec', async ({ page }) => {
     const r = await summon(page, { concept: 'hourglass' });
     expect(r.status()).toBe(200);
     const data = await r.json();
@@ -31,12 +26,10 @@ test.describe('Summon API (tier 2, LLM tier)', () => {
     const spec = data.spec;
     expect(spec).toBeTruthy();
     expect(typeof spec.id).toBe('string');
-    expect(ALLOWED_TYPES).toContain(spec.type);
+    expect(spec.schema).toBe(2);
     expect(['small', 'medium', 'large']).toContain(spec.size || 'medium');
-    if (spec.parts) {
-      expect(spec.parts.length).toBeGreaterThan(0);
-      expect(spec.parts.length).toBeLessThanOrEqual(12);
-    }
+    expect(spec.root).toBeTruthy();
+    expect(typeof spec.root.op).toBe('string');
   });
 
   test('S19: invalid spec -> fix-retry -> 422 abstractify', async ({ page }) => {
@@ -55,6 +48,7 @@ test.describe('Summon API (tier 2, LLM tier)', () => {
     expect(fix.status()).toBe(200);
     const fixBody = await fix.json();
     expect(fixBody.spec.id).toBe('retry_fixed');
+    expect(fixBody.spec.schema).toBe(2);
   });
 
   test('S21: cache hit returns the canonical spec with no LLM call', async ({ page }) => {

@@ -4,7 +4,8 @@ DEEPSEEK_BASE_URL. Behavior is keyed off the concept in the last user message:
 
 - "bad_spec"    -> always invalid (exercises the 422 abstractify path)
 - "retry_spec"  -> invalid on first call, valid on the fix-prompt retry
-- anything else -> a valid goblet spec whose id is the concept slug
+- "slow_reliquary" -> sleeps, then returns a valid v2 spec (face-as-loading)
+- anything else -> a valid grammar-v2 spec whose id is the concept slug
 """
 
 import json
@@ -13,7 +14,13 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
-GOBLET = {"id": "stub_goblet", "type": "goblet", "params": {}, "size": "medium"}
+# A valid grammar-v2 SDF root. Small and angular — the house idiom.
+VALID_ROOT = {"op": "gem", "r": 1}
+BAD_ROOT = {"op": "flux-capacitor"}
+
+
+def v2_spec(spec_id, root):
+    return {"id": spec_id, "schema": 2, "size": "medium", "root": root}
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -44,18 +51,18 @@ class StubHandler(BaseHTTPRequestHandler):
                     is_retry = True
 
         if concept == "bad_spec":
-            spec = {"id": "bad", "type": "flux-capacitor"}
+            spec = v2_spec("bad", BAD_ROOT)
         elif concept == "retry_spec":
-            spec = ({"id": "bad", "type": "flux-capacitor"} if not is_retry
-                    else {"id": "retry_fixed", "type": "gem"})
+            spec = (v2_spec("bad", BAD_ROOT) if not is_retry
+                    else v2_spec("retry_fixed", VALID_ROOT))
         elif concept == "slow_reliquary":
             # Slow response (Phase 0): lets the client's face-as-loading
             # contemplation state be observed before the spec lands.
             time.sleep(2.5)
-            spec = {"id": "slow_reliquary", "type": "goblet", "params": {}, "size": "medium"}
+            spec = v2_spec("slow_reliquary", VALID_ROOT)
         else:
             slug = re.sub(r"[^a-z0-9]+", "_", concept.lower()).strip("_") or "thing"
-            spec = {"id": slug, "type": "goblet", "params": {}, "size": "medium"}
+            spec = v2_spec(slug, VALID_ROOT)
 
         payload = json.dumps({"choices": [{"message": {"content": json.dumps(spec)}}]}).encode()
         self.send_response(200)

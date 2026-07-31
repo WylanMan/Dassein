@@ -80,7 +80,8 @@ test.describe('Tier 2 client pipeline', () => {
     expect(result.finite).toBe(true);
     expect(result.edgeCount).toBeGreaterThan(0);
     expect(result.spec.id).toBe('widget');
-    expect(result.spec.type).toBe('goblet'); // stub returns a goblet spec
+    expect(result.spec.schema).toBe(2); // stub now serves a grammar-v2 spec
+    expect(result.spec.root).toBeTruthy();
   });
 
   test('S23: face-as-loading — summon wears a contemplation face, then morphs to shape', async ({ page }) => {
@@ -108,13 +109,15 @@ test.describe('Tier 2 client pipeline', () => {
     const result = await page.evaluate(() => ({
       shape: window.__testHooks.currentShape,
       count: window.__testHooks.shapeTargets.length,
-      specType: window.__scene.spec?.type,
+      specSchema: window.__scene.spec?.schema,
+      hasRoot: !!(window.__scene.spec?.root),
       finite: window.__testHooks.shapeTargets.every(p =>
         Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)),
     }));
     expect(result.shape).toBe('slow_reliquary');
     expect(result.count).toBe(478);
-    expect(result.specType).toBe('goblet');
+    expect(result.specSchema).toBe(2); // stub serves a grammar-v2 spec
+    expect(result.hasRoot).toBe(true);
     expect(result.finite).toBe(true);
   });
 });
