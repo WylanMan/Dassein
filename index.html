@@ -162,6 +162,7 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { VoiceRealtime } from './voice-realtime.js';
     import { VoiceConversation } from './voice-conversation.js';
+    import { targetsFromSDF } from './sdf-core.mjs';
 
 
     const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1679,7 +1680,30 @@
 
     // Turn a spec into final 478-point targets and swap in the shared globals.
     function buildProceduralTargets(spec, force) {
-      // Route: spec.parts → compound path; else union; else single type (A1).
+      // Route: v2 SDF grammar → schema-2 path; else parts → compound; else
+      // union; else single type (A1).
+      if (spec.schema === 2 && spec.root) {
+        const key = 'v2:' + hashString(JSON.stringify(spec.root)) + ':' + (spec.seed ?? 0);
+        if (force) PROC_CACHE.delete(key);
+        let entry = PROC_CACHE.get(key);
+        if (!entry) {
+          entry = targetsFromSDF(spec.root, spec.seed ?? 0);
+          cachePut(key, entry);
+        }
+        let targets = copyTargets(entry.targets);
+        // v2 forms normalize to the reference bulk like compounds/unions (G1);
+        // the surface is order-aligned by direction already, so no FPS.
+        const baseScale = REF_RADIUS / (entry.radius || 1e-6);
+        if (baseScale !== 1) scaleTargets(targets, baseScale);
+        if (spec.mods && Object.keys(spec.mods).length) applyMods(targets, spec.mods, spec.seed);
+        const ss = SIZE_SCALES[spec.size || 'medium'] || 1.0;
+        if (ss !== 1.0) scaleTargets(targets, ss);
+        const fpsEdges = nearestNeighborEdges(targets, 6);
+        shapeTargets = targets;
+        shapeTargetEdgeIndices = [];
+        for (const [a, b] of fpsEdges) shapeTargetEdgeIndices.push(a, b);
+        return targets;
+      }
       const isCompound = Array.isArray(spec.parts) && spec.parts.length > 0;
       const isUnion = !isCompound && Array.isArray(spec.union) && spec.union.length >= 2;
       const A = isCompound
@@ -2844,6 +2868,13 @@
       getCuratedSpec: (name) => getCuratedSpec(name),
       spawnCurated: (name, size) => spawnCurated(name, size),
       summonObject: (args) => summonObject(args),
+      buildSdfTargets: (root, seed) => {
+        const entry = targetsFromSDF(root, seed ?? 0);
+        const targets = copyTargets(entry.targets);
+        const baseScale = REF_RADIUS / (entry.radius || 1e-6);
+        if (baseScale !== 1) scaleTargets(targets, baseScale);
+        return { targets, missCount: entry.missCount, radius: entry.radius };
+      },
       get curatedNames() { return Object.keys(CURATED_SPECS); },
     };
   </script>
