@@ -1869,8 +1869,37 @@
       },
     };
 
+    // Concept aliases so voice phrases hit the library without a second thought.
+    const CURATED_ALIASES = {
+      hourglass: ['hourglass'],
+      throne: ['throne'],
+      labyrinth: ['labyrinth', 'maze'],
+      lantern: ['lantern'],
+      key: ['key'],
+      door: ['door', 'doorway'],
+      chain: ['chain'],
+      monument: ['monument', 'obelisk', 'column', 'pillar'],
+      arch: ['arch', 'bridge', 'stone arch', 'stone bridge', 'arc'],
+      chrysalis: ['chrysalis', 'cocoon', 'pod'],
+      gate: ['gate', 'gateway', 'portal', 'threshold', 'torii'],
+      well: ['well'],
+      sundial: ['sundial', 'sun dial'],
+      crown: ['crown', 'diadem'],
+      ship: ['ship', 'boat', 'vessel', 'sailboat'],
+      altar: ['altar', 'shrine'],
+    };
+
     function getCuratedSpec(name) {
-      const spec = CURATED_SPECS[String(name || '').toLowerCase().trim()];
+      const key = String(name || '').toLowerCase().trim();
+      let spec = CURATED_SPECS[key] || CURATED_SPECS[CURATED_ALIASES[key]?.find(a => a === key)];
+      if (!spec) {
+        // Substring pass: "a golden hourglass" or "stone arch" resolves by its
+        // contained concept word — the voice agent keeps concepts concise, so
+        // collisions stay rare.
+        for (const [id, aliases] of Object.entries(CURATED_ALIASES)) {
+          if (aliases.some(a => key.includes(a) && a.length >= 3)) { spec = CURATED_SPECS[id]; break; }
+        }
+      }
       return spec ? { ...spec } : null;
     }
 
@@ -1882,6 +1911,104 @@
       spec.size = size || spec.size || 'medium';
       await spawnObject(spec);
       return spec.id;
+    }
+
+    // ─── Summon flow (C1 + C2 + C3) ──────────────────────────────────────
+    // Curated fast path (zero latency, no API) + LLM synthesis tier with a
+    // stand-in morph while the spec arrives. Re-rolls ("different") bump the
+    // seed; refined concepts ("like that but X") get a new canonical entry.
+    // Every failure degrades to a seeded abstract form — never a crash (B3).
+    let _summonState = null;   // { concept, seed } for re-roll detection
+    let _summonToken = 0;      // guards stale async completions
+
+    function summonStandIn(concept) {
+      const spec = {
+        id: 'abstract',
+        type: 'blob',
+        mods: { jitter: { amp: 0.06 } },
+        seed: hashString(String(concept || 'abstract')),
+      };
+      spawnObject(spec);
+    }
+
+    async function fetchSummonSpec(concept, seed) {
+      const r = await fetch('/api/summon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concept, seed }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (data.abstractify) return { abstract: true, message: data.error || 'summon failed' };
+        throw new Error(data.error || `summon failed (${r.status})`);
+      }
+      return { spec: data.spec, id: data.id };
+    }
+
+    // B3 post-build sanity: spawn the spec, but on any build failure degrade to
+    // a seeded abstract form instead of surfacing an error.
+    async function spawnWithFallback(spec, concept) {
+      try {
+        await spawnObject(spec);
+        const ok = shapeTargets.every(p =>
+          Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z));
+        if (!ok) throw new Error('non-finite build');
+        return true;
+      } catch (e) {
+        console.warn('[summon] build failed, abstract fallback:', e);
+        await spawnObject({
+          id: 'abstract',
+          type: 'blob',
+          mods: { jitter: { amp: 0.12 } },
+          seed: hashString(String(concept || 'abstract')),
+        });
+        return false;
+      }
+    }
+
+    async function summonObject(args = {}) {
+      const concept = String(args.concept || '').trim();
+      if (!concept) return 'No concept given. Tell me what to summon.';
+      const norm = concept.toLowerCase();
+      const isReroll = !!(_summonState && _summonState.concept === norm);
+      const seed = isReroll ? _summonState.seed + 1 : (Number(args.seed) || undefined);
+
+      // Curated fast path — the demo-day deliverable. Deterministic, instant.
+      const curated = getCuratedSpec(norm);
+      if (curated) {
+        let spec = curated;
+        if (isReroll) {
+          spec.seed = seed;
+          spec.mods = { ...(curated.mods || {}), jitter: { amp: 0.08 } };
+        }
+        await spawnWithFallback(spec, norm);
+        _summonState = { concept: norm, seed: spec.seed ?? 0 };
+        return `Summoned ${curated.id}.`;
+      }
+
+      // LLM tier: stand-in morph at t=0, synthesize while narration flows.
+      const token = ++_summonToken;
+      summonStandIn(norm);
+      const promise = fetchSummonSpec(norm, seed);
+      const result = await Promise.race([
+        promise,
+        new Promise(res => setTimeout(() => res({ timeout: true }), 6000)),
+      ]);
+      if (token !== _summonToken) return 'Summoned.';
+      if (result.timeout) {
+        // Narrate-and-continue: finish the morph when the spec arrives.
+        promise.then(r => {
+          if (token === _summonToken && r && !r.abstract) spawnWithFallback(r.spec, norm);
+        }).catch(() => {});
+        return `Summoning ${norm} — its form is still settling.`;
+      }
+      if (result.abstract) {
+        summonStandIn(norm); // reinforce the seeded abstract form
+        return `It resisted capture; here is its abstract form.`;
+      }
+      const ok = await spawnWithFallback(result.spec, norm);
+      _summonState = { concept: norm, seed: result.spec.seed ?? seed ?? 0 };
+      return ok ? `Summoned ${result.id}.` : `It resisted capture; here is its abstract form.`;
     }
 
     // switchShape keeps only face/sphere/model semantics. Procedural names
@@ -2594,6 +2721,7 @@
             return `Failed to spawn ${object}: ${e.message}`;
           }
         },
+        summon_object: async (args = {}) => summonObject(args),
       },
       onError: (err) => console.error('[Realtime]', err),
     });
@@ -2693,6 +2821,7 @@
       spawnObject: (name, size, opts) => spawnObject(name, size, opts),
       getCuratedSpec: (name) => getCuratedSpec(name),
       spawnCurated: (name, size) => spawnCurated(name, size),
+      summonObject: (args) => summonObject(args),
       get curatedNames() { return Object.keys(CURATED_SPECS); },
     };
   </script>
