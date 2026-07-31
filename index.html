@@ -717,6 +717,7 @@
         jawWeights, jawCurveWeight, noseBaseWeight, cheekWeight,
         scanData, behavior: null,
         spec: null,
+        get specLibrary() { return CURATED_SPECS; },
         faceNNIndices,
       };
     }
@@ -1727,6 +1728,162 @@
       return type;
     }
 
+    // ─── Curated spec library (A4) ────────────────────────────────────────
+    // Hand-written storytelling specs — deterministic, guaranteed legible, zero
+    // API, zero latency. Same data structure as LLM-tier cache entries, so the
+    // library doubles as the few-shot example bank in the DeepSeek prompt.
+    // Quality bar is identifiability: the 478-point net must read at a glance.
+    const CURATED_SPECS = {
+      hourglass: {
+        id: 'hourglass',
+        type: 'vase',
+        params: {
+          profile: [[-1, 0.06], [-0.72, 0.55], [-0.45, 0.12], [0, 0.07], [0.45, 0.12], [0.72, 0.55], [1, 0.06]],
+        },
+      },
+      throne: {
+        id: 'throne',
+        parts: [
+          { type: 'cube', pos: [0, 0.44, -0.3], scale: [1.15, 1.05, 0.16] },
+          { type: 'cube', pos: [0, 0.08, 0], scale: [1.15, 0.14, 0.65] },
+          { type: 'cube', pos: [-0.4, -0.42, 0.05], scale: [0.14, 0.75, 0.14] },
+          { type: 'cube', pos: [0.4, -0.42, 0.05], scale: [0.14, 0.75, 0.14] },
+          { type: 'pyramid', pos: [0, 1.0, -0.3], scale: [0.24, 0.3, 0.24] },
+        ],
+      },
+      labyrinth: {
+        id: 'labyrinth',
+        type: 'spiral',
+        params: { turns: 4.5, thickness: 0.09 },
+        mods: { squash: { kx: 1, ky: 0.18, kz: 1 } },
+      },
+      lantern: {
+        id: 'lantern',
+        parts: [
+          { type: 'blob', pos: [0, -0.12, 0], scale: [0.72, 0.85, 0.72] },
+          { type: 'cone', pos: [0, 0.6, 0], scale: [0.42, 0.4, 0.42] },
+          { type: 'torus', pos: [0, 0.86, 0], scale: [0.24, 0.24, 0.24] },
+        ],
+      },
+      key: {
+        id: 'key',
+        parts: [
+          { type: 'torus', pos: [0, 0.62, 0], scale: 0.5 },
+          { type: 'cylinder', pos: [0, -0.2, 0], scale: [0.11, 1.1, 0.11] },
+          { type: 'cross', pos: [0, -0.85, 0], scale: 0.34 },
+        ],
+      },
+      door: {
+        id: 'door',
+        parts: [
+          { type: 'cube', pos: [0, 0.1, 0], scale: [0.95, 1.7, 0.12] },
+          { type: 'torus', pos: [0.34, 0.05, 0.09], scale: 0.16 },
+          { type: 'cube', pos: [0, -0.9, 0], scale: [1.1, 0.1, 0.16] },
+        ],
+      },
+      chain: {
+        id: 'chain',
+        parts: [
+          { type: 'torus', pos: [0, -0.55, 0], scale: 0.46 },
+          { type: 'torus', pos: [0, -0.2, 0], rot: { deg: 90 }, scale: 0.46 },
+          { type: 'torus', pos: [0, 0.15, 0], scale: 0.46 },
+          { type: 'torus', pos: [0, 0.5, 0], rot: { deg: 90 }, scale: 0.46 },
+          { type: 'torus', pos: [0, 0.85, 0], scale: 0.46 },
+        ],
+      },
+      monument: {
+        id: 'monument',
+        parts: [
+          { type: 'cube', pos: [0, -0.52, 0], scale: [1.5, 0.18, 1.5] },
+          { type: 'cylinder', pos: [0, 0.12, 0], scale: [0.3, 1.15, 0.3] },
+          { type: 'pyramid', pos: [0, 0.72, 0], scale: [0.55, 0.4, 0.55] },
+        ],
+      },
+      arch: {
+        id: 'arch',
+        parts: [
+          { type: 'torus', pos: [0, 0.34, 0], scale: [0.58, 0.58, 0.26] },
+          { type: 'cube', pos: [-0.2, -0.32, 0], scale: [0.15, 0.7, 0.15] },
+          { type: 'cube', pos: [0.2, -0.32, 0], scale: [0.15, 0.7, 0.15] },
+        ],
+      },
+      chrysalis: {
+        id: 'chrysalis',
+        type: 'vase',
+        params: {
+          profile: [[-1, 0.06], [-0.6, 0.34], [-0.2, 0.46], [0.25, 0.46], [0.7, 0.3], [1, 0.05]],
+        },
+        mods: { bend: 0.08 },
+      },
+      gate: {
+        id: 'gate',
+        parts: [
+          { type: 'cube', pos: [-0.55, 0, 0], scale: [0.14, 1.5, 0.14] },
+          { type: 'cube', pos: [0.55, 0, 0], scale: [0.14, 1.5, 0.14] },
+          { type: 'cube', pos: [0, 0.78, 0], scale: [1.35, 0.18, 0.14] },
+          { type: 'pyramid', pos: [0, 0.92, 0], scale: [0.24, 0.16, 0.24] },
+        ],
+      },
+      well: {
+        id: 'well',
+        parts: [
+          { type: 'cylinder', pos: [0, -0.2, 0], scale: [1.0, 0.6, 1.0] },
+          { type: 'cube', pos: [-0.46, 0.28, 0], scale: [0.1, 0.55, 0.1] },
+          { type: 'cube', pos: [0.46, 0.28, 0], scale: [0.1, 0.55, 0.1] },
+          { type: 'cone', pos: [0, 0.72, 0], scale: [0.8, 0.3, 0.8] },
+        ],
+      },
+      sundial: {
+        id: 'sundial',
+        parts: [
+          { type: 'cylinder', pos: [0, -0.08, 0], scale: [0.95, 0.14, 0.95] },
+          { type: 'pyramid', pos: [0, 0.14, 0], params: { sides: 3 }, scale: [0.34, 0.55, 0.28] },
+        ],
+      },
+      crown: {
+        id: 'crown',
+        parts: [
+          { type: 'torus', pos: [0, -0.2, 0], scale: 0.5 },
+          { type: 'cone', pos: [0.22, 0.02, 0], scale: [0.13, 0.42, 0.13] },
+          { type: 'cone', pos: [0.068, 0.02, 0.209], scale: [0.13, 0.42, 0.13] },
+          { type: 'cone', pos: [-0.178, 0.02, 0.129], scale: [0.13, 0.42, 0.13] },
+          { type: 'cone', pos: [-0.178, 0.02, -0.129], scale: [0.13, 0.42, 0.13] },
+          { type: 'cone', pos: [0.068, 0.02, -0.209], scale: [0.13, 0.42, 0.13] },
+        ],
+      },
+      ship: {
+        id: 'ship',
+        parts: [
+          { type: 'bowl', pos: [0, -0.3, 0], scale: [1.25, 0.55, 0.4] },
+          { type: 'cylinder', pos: [0, 0.22, 0], scale: [0.06, 0.95, 0.06] },
+          { type: 'pyramid', pos: [0.06, 0.3, 0], params: { sides: 3 }, scale: [0.16, 0.75, 0.04] },
+        ],
+      },
+      altar: {
+        id: 'altar',
+        parts: [
+          { type: 'cube', pos: [0, -0.25, 0], scale: [1.2, 0.5, 0.75] },
+          { type: 'cube', pos: [0, 0.1, 0], scale: [1.35, 0.12, 0.9] },
+          { type: 'gem', pos: [0, 0.38, 0], scale: 0.22 },
+        ],
+      },
+    };
+
+    function getCuratedSpec(name) {
+      const spec = CURATED_SPECS[String(name || '').toLowerCase().trim()];
+      return spec ? { ...spec } : null;
+    }
+
+    // Spawn a curated spec through the standard pipeline (same path as pills
+    // and voice). Returns the id or null if the concept isn't in the library.
+    async function spawnCurated(name, size) {
+      const spec = getCuratedSpec(name);
+      if (!spec) return null;
+      spec.size = size || spec.size || 'medium';
+      await spawnObject(spec);
+      return spec.id;
+    }
+
     // switchShape keeps only face/sphere/model semantics. Procedural names
     // route through the spec path (spawnObject), so a voice "cube" and the
     // cube pill are the same path by construction.
@@ -2534,6 +2691,9 @@
       get shapeTargets() { return shapeTargets; },
       get shapeTargetEdgeIndices() { return shapeTargetEdgeIndices; },
       spawnObject: (name, size, opts) => spawnObject(name, size, opts),
+      getCuratedSpec: (name) => getCuratedSpec(name),
+      spawnCurated: (name, size) => spawnCurated(name, size),
+      get curatedNames() { return Object.keys(CURATED_SPECS); },
     };
   </script>
 </body>
