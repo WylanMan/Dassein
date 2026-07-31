@@ -374,6 +374,62 @@ test.describe('Procedural spawn (tier 0)', () => {
     expect(result.shape).toBe('torus');
     expect(result.clean).toBe(true);
   });
+
+  test('S14: union fuses two shapes deterministically', async ({ page }) => {
+    const first = await page.evaluate(() => {
+      window.__testHooks.spawnObject({ type: 'cube', union: ['cube', 'gem'] }, undefined, { force: true });
+      return {
+        targets: window.__testHooks.shapeTargets.map(t => [t.x, t.y, t.z]),
+        count: window.__testHooks.shapeTargets.length,
+        radius: Math.max(...window.__testHooks.shapeTargets.map(p => Math.hypot(p.x, p.y, p.z))),
+      };
+    });
+    const second = await page.evaluate(() => {
+      window.__testHooks.spawnObject({ type: 'cube', union: ['cube', 'gem'] }, undefined, { force: true });
+      return window.__testHooks.shapeTargets.map(t => [t.x, t.y, t.z]);
+    });
+    let maxDiff = 0;
+    for (let i = 0; i < 478; i++) {
+      maxDiff = Math.max(maxDiff,
+        Math.abs(first.targets[i][0] - second[i][0]),
+        Math.abs(first.targets[i][1] - second[i][1]),
+        Math.abs(first.targets[i][2] - second[i][2]));
+    }
+    expect(first.count).toBe(478);
+    expect(first.radius).toBeCloseTo(0.55, 2);
+    expect(maxDiff).toBe(0);
+  });
+
+  test('S15: union net differs from each member shape', async ({ page }) => {
+    const member = async (spec) => page.evaluate((s) => {
+      window.__testHooks.spawnObject(s, undefined, { force: true });
+      return window.__testHooks.shapeTargets.map(t => [t.x, t.y, t.z]);
+    }, spec);
+    const cube = await member({ type: 'cube' });
+    const gem = await member({ type: 'gem' });
+    const union = await member({ type: 'cube', union: ['cube', 'gem'] });
+    const maxDiff = (x, y) => {
+      let m = 0;
+      for (let i = 0; i < 478; i++) {
+        m = Math.max(m,
+          Math.abs(x[i][0] - y[i][0]),
+          Math.abs(x[i][1] - y[i][1]),
+          Math.abs(x[i][2] - y[i][2]));
+      }
+      return m;
+    };
+    expect(maxDiff(union, cube)).toBeGreaterThan(0.01);
+    expect(maxDiff(union, gem)).toBeGreaterThan(0.01);
+  });
+
+  test('S16: voice tool accepts combine and mirrors the union spec', async ({ page }) => {
+    const msg = await page.evaluate(() =>
+      window.agentAvatar.realtime._tools.spawn_object({ object: 'cube', combine: ['gem', 'torus'] }));
+    expect(msg).toContain('Spawned cube');
+    expect(msg).toContain('combined with gem and torus');
+    const spec = await page.evaluate(() => window.__scene.spec);
+    expect(spec.union).toEqual(['cube', 'gem', 'torus']);
+  });
 });
 
 test.describe('Performance', () => {

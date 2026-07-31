@@ -20,7 +20,7 @@ Live at https://www.dassein.io
 | `server.py` | Local dev server (Python stdlib) with same API endpoints as `api/index.py` |
 | `vercel.json` | Routes `/api/*` → serverless function |
 | `requirements.txt` | Python deps for both local and Vercel |
-| `tests/e2e/dassein.spec.js` | Playwright E2E tests — landing state, transformation, agent mode, procedural spawn (tier-0 S1–S7 + tier-1 S8–S13), performance |
+| `tests/e2e/dassein.spec.js` | Playwright E2E tests — landing state, transformation, agent mode, procedural spawn (tier-0 S1–S7 + tier-1 S8–S16), performance |
 | `playwright.config.js` | Playwright config — runs `python3 server.py` on port 3000 |
 | `docs/PLAN_TIER1.md` | Tier-1 shape system + repo cleanup plan — spec model, modifiers, blend, voice schema |
 | `docs/PLAN.md` | Redesign plan v4 — the spec that produced the current `index.html` |
@@ -46,10 +46,11 @@ Or serve statically with `npx serve .`.
 
 ## Tier-1 shape system
 
-- Unified spec: `{ type, size='medium', params={}, mods={}, blend={with, ratio}, seed, url }`.
-- Bases are welded + FPS'd once and cached by `(type, params)` only (bounded ~26 entries). Mods, blend, size, and edges are cheap 478-point array ops recomputed per spawn. `force` clears a base key.
+- Unified spec: `{ type, size='medium', params={}, mods={}, blend={with, ratio}, union=[...], seed, url }`.
+- Bases are welded + FPS'd once and cached by `(type, params)` only (bounded ~26 entries); unions are cached under a composite key. Mods, blend, size, and edges are cheap 478-point array ops recomputed per spawn. `force` clears a base key.
 - Modifiers run pointwise on target arrays post-FPS in fixed order: squash → bend → twist → taper → bulge → spherize → jitter. All functions of normalized height/radius.
 - Blend is a 478-point lerp over size-normalized cached bases; `ratio=0` ≈ A exactly, size applied last.
+- **Union/merge:** `union: ['cube', 'gem']` fuses two+ base geometries before the weld → FPS step, so the net samples both shapes in one solid (same mechanism as the double-strand `helix`). Normalized to the 0.55r bulk; voice exposes it as `combine`.
 - **G1:** each name lands at its current absolute size — native primitives (cube/cylinder/pyramid/cone/torus) keep their geometry scale; every other builder is normalized to the 0.55r bulk.
 - **G2:** `object:'model'` without a `url` loads the Duck (default); with `url` it loads any `.glb` via `loadGLBFromURL` (CORS failures return a helpful error).
 - Builder-conformance rule: every builder must produce ≥478 unique welded verts (FPS guard stays loud).

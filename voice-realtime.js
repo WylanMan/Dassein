@@ -19,7 +19,7 @@ const INSTRUCTIONS =
   'You have a spawn_object tool. It renders any object as a wireframe 3D form on screen. ' +
   `Available objects: ${OBJECT_TYPES.join(', ')}. ` +
   'Use it automatically when the user asks to see, show, or turn into an object or shape. Do not describe using the tool — just use it, then respond briefly.\n' +
-  'You can modulate a spawn with small parameters: twisted (twist), stretched (stretch), spikier (sharpness), blend X into Y (blend_with, blend_ratio), or surprise me (seed). Keep your vocabulary natural — never read parameter names aloud.\n' +
+  'You can modulate a spawn with small parameters: twisted (twist), stretched (stretch), spikier (sharpness), blend X into Y (blend_with, blend_ratio), combine X with Y (combine — fuse two shapes into one), or surprise me (seed). Keep your vocabulary natural — never read parameter names aloud.\n' +
   'For the model object, pass url to load a specific .glb; omitting it loads the default duck.\n' +
   'You also have web_search, get_time, and get_weather tools. Use them when the user asks for current information, the time, or the weather.';
 
@@ -65,6 +65,7 @@ const TOOL_DEFS = [
         sharpness: { type: 'number', description: 'Spikiness / jaggedness, 0..1' },
         blend_with: { type: 'string', description: 'Blend this object into another object type', enum: OBJECT_TYPES },
         blend_ratio: { type: 'number', description: 'How much of blend_with to mix in, 0..1' },
+        combine: { type: 'array', description: 'Fuse this object with other object types into one form (minimum 1 other type)', items: { type: 'string', enum: OBJECT_TYPES } },
         url: { type: 'string', description: 'Optional .glb URL to load as the model' },
         params: {
           type: 'object',
