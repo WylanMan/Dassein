@@ -7,7 +7,7 @@ Current authoritative plan. Supersedes the v4 redesign plan, PLAN_TIER1.md, and 
 - **Step 0–5 ✅** — Tier-1 commit, compound builder + profiles (A1/A3), curated library (A4), DeepSeek spike (D2), `/api/summon` (B1/B2/B3 + S17/S19/S21), voice summoning (C1/C2/C3 + S18/S20).
 - **D2 verdict ✅ PASS** — 10/10 concepts built (gate ≥7); identifiability confirmed cold on fully-settled renders. Initial 0/10 was a **capture artifact**: screenshots were taken 350ms into a 1.5s morph (mid-transition frames). Lesson: **summon screenshots must be captured after the morph settles (~2.2s)**, not on spawn.
 - **F3 ✅** — full suite: 31 tests green (`tests/e2e/dassein.spec.js` S1–S16/T-series, `summon.spec.js` S17/S19/S21, `tier2.spec.js` S18/S20). DeepSeek mocked via `DEEPSEEK_BASE_URL` → `tests/support/summon_stub.py` (port 3001).
-- **Deploy** — see Deploy section; `DEEPSEEK_API_KEY` must be set in Vercel for the LLM tier.
+- **Deploy ⏸** — all code committed and tested; deployment deferred by choice. `vercel --prod` when ready; `DEEPSEEK_API_KEY` is already set in Vercel Production.
 
 ## Premise
 
