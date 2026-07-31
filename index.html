@@ -151,8 +151,7 @@
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/",
-        "delaunator": "https://cdn.jsdelivr.net/npm/delaunator@4.0.1/index.js"
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/"
       }
     }
   </script>
@@ -717,6 +716,7 @@
         faceLandmarks3D: faceLMs, seedPositionsArr: positions,
         jawWeights, jawCurveWeight, noseBaseWeight, cheekWeight,
         scanData, behavior: null,
+        spec: null,
         faceNNIndices,
       };
     }
@@ -735,6 +735,12 @@
     }
 
     let isAnimating = false;
+    let activeMorphTween = null;
+
+    function interruptMorph() {
+      if (activeMorphTween) { activeMorphTween.kill(); activeMorphTween = null; }
+      isAnimating = false;
+    }
 
     function triggerTransform() {
       if (state !== 'landing' || isAnimating) return;
@@ -931,7 +937,6 @@
     });
 
     // --- Shape morphing engine ---
-    const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus', 'model'];
 
     function weldVertices(positions, threshold) {
       const n = positions.length / 3;
@@ -952,6 +957,12 @@
 
     function farthestPointSampling(vertices, targetCount, seed) {
       const n = vertices.length / 3;
+      if (targetCount > n) {
+        // FPS can only pick distinct vertices; past the count it silently
+        // re-selects the last one → collapsed clusters that read as horizontal
+        // cross-sections. Fail loud so builders keep ≥ NUM unique verts.
+        throw new Error(`farthestPointSampling: target ${targetCount} > available ${n} verts`);
+      }
       const selected = new Array(targetCount);
       const distances = new Float32Array(n).fill(Infinity);
       selected[0] = seed % n;
@@ -972,11 +983,18 @@
 
     const GLB_MODEL_URL = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Duck/glTF-Binary/Duck.glb';
 
-    async function loadGLBModel(url) {
+    async function loadGLBFromURL(url) {
       const loader = new GLTFLoader();
-      const gltf = await new Promise((resolve, reject) => {
-        loader.load(url, resolve, undefined, reject);
-      });
+      let gltf;
+      try {
+        gltf = await new Promise((resolve, reject) => {
+          loader.load(url, resolve, undefined, reject);
+        });
+      } catch (err) {
+        throw new Error(
+          `Could not load model from URL. Check that it points at a valid .glb and the host allows CORS: ${url}`
+        );
+      }
       const allVerts = [];
       gltf.scene.traverse((child) => {
         if (child.isMesh) {
@@ -995,42 +1013,26 @@
       cx /= n; cy /= n; cz /= n;
       let maxDist = 0;
       for (let i = 0; i < allVerts.length; i += 3) {
-        const dx = allVerts[i] - cx, dy = allVerts[i+1] - cy, dz = allVerts[i+2] - cz;
-        allVerts[i] = dx; allVerts[i+1] = dy; allVerts[i+2] = dz;
-        maxDist = Math.max(maxDist, Math.sqrt(dx*dx + dy*dy + dz*dz));
+        allVerts[i] -= cx; allVerts[i+1] -= cy; allVerts[i+2] -= cz;
+        maxDist = Math.max(maxDist, Math.hypot(allVerts[i], allVerts[i+1], allVerts[i+2]));
       }
-      const scale = 0.5 / maxDist;
+      const scale = 0.5 / (maxDist || 1);
       for (let i = 0; i < allVerts.length; i++) allVerts[i] *= scale;
-      const rawVerts = new Float32Array(allVerts);
-      const welded = weldVertices(rawVerts, 0.001);
-      const selected = farthestPointSampling(welded.vertices, NUM, 0);
-      const targets = new Array(NUM);
-      const v = welded.vertices;
-      for (let i = 0; i < NUM; i++) {
-        const idx = selected[i] * 3;
-        targets[i] = { x: v[idx], y: v[idx + 1], z: v[idx + 2] };
-      }
-      shapeTargets = targets;
-      const fpsEdges = nearestNeighborEdges(targets, 6);
-      shapeTargetEdgeIndices = [];
-      for (const [a, b] of fpsEdges) shapeTargetEdgeIndices.push(a, b);
-      return true;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(allVerts), 3));
+      const result = targetsFromGeometry(geo);
+      geo.dispose();
+      shapeTargets = result.targets;
+      shapeTargetEdgeIndices = result.edgeIndices;
+      return result.targets;
     }
 
-    async function loadShapeGLB(name) {
-      if (name === 'model') return loadGLBModel(GLB_MODEL_URL);
-      const D = { cube: 16, cylinder: 32, pyramid: 32, torus: 32 };
-      const H = { cylinder: 16, pyramid: 16 };
-      let geo;
-      switch (name) {
-        case 'cube':     geo = new THREE.BoxGeometry(0.5, 0.5, 0.5, D.cube, D.cube, D.cube); break;
-        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1.0, D.cylinder, H.cylinder); break;
-        case 'pyramid':  geo = new THREE.ConeGeometry(0.5, 0.85, D.pyramid, H.pyramid); break;
-        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, D.torus, D.torus); break;
-        default: return null;
-      }
+    // Shared "geometry → wireframe net" step. Every shape — pill primitives,
+    // procedural builders, GLB imports — passes through here: weld duplicates,
+    // FPS down to exactly NUM points, then k-NN edges. Pure: returns the
+    // {targets, edgeIndices} result without touching the shared globals.
+    function targetsFromGeometry(geo) {
       geo.computeVertexNormals();
-
       const posAttr = geo.getAttribute('position');
       const rawVerts = new Float32Array(posAttr.array);
       const welded = weldVertices(rawVerts, 0.001);
@@ -1041,23 +1043,457 @@
         const idx = selected[i] * 3;
         targets[i] = { x: v[idx], y: v[idx + 1], z: v[idx + 2] };
       }
-      shapeTargets = targets;
-
       const fpsEdges = nearestNeighborEdges(targets, 6);
+      const edgeIndices = [];
+      for (const [a, b] of fpsEdges) edgeIndices.push(a, b);
+      return { targets, edgeIndices };
+    }
+
+    // ─── Procedural builder registry (tier 1) ────────────────────────────
+    // Every builder returns a THREE.BufferGeometry, then passes through
+    // targetsFromGeometry() (weld → FPS → k-NN edges) to render as the
+    // icosahedral wireframe net.
+    //
+    // Builder-conformance rule: every builder MUST produce ≥478 unique welded
+    // verts. FPS can only pick distinct vertices — past the count it silently
+    // re-selects the last one into collapsed clusters (the guard at
+    // farthestPointSampling stays loud). Parameterized families tune their
+    // tessellation so this holds at every parameter combination.
+    //
+    // Unified spec: { type, size='medium', params={}, mods={}, blend={with, ratio}, seed, url }.
+    // Bases are welded + FPS'd ONCE and cached by (type, params) only (small,
+    // bounded ~26 entries). Mods, blend, size, and edges are cheap 478-point
+    // array ops recomputed per spawn. Deterministic: seeded noise + fixed FPS
+    // seed → same spec always produces the same net.
+    //
+    // G1: each name lands at its current absolute size. Native primitives
+    // keep their exact geometry scale (BASE_SCALE 1); every other builder is
+    // normalized to the tier-0 bulk (0.55r) via baseScaleFor. The requested
+    // size is applied last, as a uniform factor on the targets.
+
+    function mulberry32(a) {
+      return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+    function hashString(str) {
+      let h = 2166136261;
+      for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return h >>> 0;
+    }
+    function hash3i(x, y, z, seed) {
+      let h = seed ^ Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1274126177);
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+    }
+    // Trilinear value noise on integer lattice hashes, 0..1, fully deterministic.
+    function valueNoise3(x, y, z, seed) {
+      const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+      const fx = x - ix, fy = y - iy, fz = z - iz;
+      const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy), uz = fz * fz * (3 - 2 * fz);
+      const c000 = hash3i(ix, iy, iz, seed), c100 = hash3i(ix + 1, iy, iz, seed);
+      const c010 = hash3i(ix, iy + 1, iz, seed), c110 = hash3i(ix + 1, iy + 1, iz, seed);
+      const c001 = hash3i(ix, iy, iz + 1, seed), c101 = hash3i(ix + 1, iy, iz + 1, seed);
+      const c011 = hash3i(ix, iy + 1, iz + 1, seed), c111 = hash3i(ix + 1, iy + 1, iz + 1, seed);
+      const x00 = c000 + (c100 - c000) * ux, x10 = c010 + (c110 - c010) * ux;
+      const x01 = c001 + (c101 - c001) * ux, x11 = c011 + (c111 - c011) * ux;
+      const y0 = x00 + (x10 - x00) * uy, y1 = x01 + (x11 - x01) * uy;
+      return y0 + (y1 - y0) * uz;
+    }
+
+    const NOISE_PROFILES = {
+      gem:     { freq: 1.4, amp: 0.5, quant: 4 },
+      rock:    { freq: 2.2, amp: 0.4, quant: 0 },
+      crystal: { freq: 2.0, amp: 0.55, quant: 0 },
+      pebble:  { freq: 1.0, amp: 0.22, quant: 0 },
+    };
+
+    function displacedIcosahedron(type) {
+      const seed = hashString(type);
+      const p = NOISE_PROFILES[type];
+      // Detail 7 keeps the welded vertex count well above NUM so FPS always
+      // has 478 distinct candidates (detail 4 collapses to ~252 → FPS dupes).
+      const geo = new THREE.IcosahedronGeometry(0.8, 7);
+      const pos = geo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        const len = Math.sqrt(x * x + y * y + z * z) || 1;
+        const n = valueNoise3((x / len) * p.freq, (y / len) * p.freq, (z / len) * p.freq, seed);
+        let d = n;
+        if (p.quant) d = Math.round(n * p.quant) / p.quant;
+        const pole = type === 'crystal' ? 1 + Math.abs(y / len) * 0.9 : 1;
+        const scale = 1 + (d - 0.5) * p.amp * 2 * pole;
+        pos.setXYZ(i, x * scale, y * scale, z * scale);
+      }
+      if (type === 'crystal') geo.scale(0.8, 1.55, 0.8);
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    const LATHE_PROFILES = {
+      vase:   [[0, -1], [0.3, -0.9], [0.62, -0.6], [0.66, -0.25], [0.4, 0.05], [0.24, 0.3], [0.26, 0.48], [0.34, 0.52], [0.3, 0.85]],
+      goblet: [[0, -1], [0.2, -1], [0.2, -0.85], [0.12, -0.7], [0.06, -0.5], [0.05, -0.3], [0.42, 0.05], [0.52, 0.3], [0.38, 0.55], [0.3, 0.75], [0.18, 0.85], [0, 0.85]],
+      rocket: [[0, -1], [0.34, -1], [0.34, 0.15], [0.2, 0.45], [0.09, 0.72], [0, 0.95]],
+      bowl:   [[0, -0.72], [0.3, -0.7], [0.55, -0.55], [0.62, -0.3], [0.62, 0.15], [0.5, 0.42], [0, 0.5]],
+    };
+
+    // Subdivide each profile segment so the lathe has many distinct height
+    // levels (a coarse 6-pt profile put nearly all FPS points on ~6 rings).
+    function subdivideProfile(pts, perSeg) {
+      const out = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [r0, h0] = pts[i], [r1, h1] = pts[i + 1];
+        for (let k = 0; k < perSeg; k++) out.push([r0 + (r1 - r0) * k / perSeg, h0 + (h1 - h0) * k / perSeg]);
+      }
+      out.push(pts[pts.length - 1]);
+      return out;
+    }
+
+    function latheBuilder(name) {
+      const pts = subdivideProfile(LATHE_PROFILES[name], 8).map(([r, h]) => new THREE.Vector2(r, h));
+      // 96 segments × subdivided profile → thousands of welded verts, so FPS
+      // samples spread across the whole surface, not horizontal rings.
+      return new THREE.LatheGeometry(pts, 96);
+    }
+
+    function polygonPts(n, r) {
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      return pts;
+    }
+    function starPts() {
+      const pts = [];
+      for (let i = 0; i < 10; i++) {
+        const r = i % 2 === 0 ? 1.0 : 0.45;
+        const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      return pts;
+    }
+    function gearPts() {
+      const pts = [];
+      const teeth = 12;
+      const step = (Math.PI * 2) / (teeth * 4);
+      for (let i = 0; i < teeth * 4; i++) {
+        const a = i * step - Math.PI / 2;
+        const r = (i % 4 === 0 || i % 4 === 1) ? 1.0 : 0.78;
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      return pts;
+    }
+    function crossPts() {
+      const a = 0.3, b = 1.0, c = 0.38;
+      return [[-a, b], [a, b], [a, c], [b, c], [b, -c], [a, -c], [a, -b], [-a, -b], [-a, -c], [-b, -c], [-b, c], [-a, c]];
+    }
+    // Subdivide each outline edge so extruded shapes produce ≥478 welded
+    // vertices (a bare star outline extruded to only ~20 welded verts).
+    function subdivideOutline(pts, perEdge) {
+      const out = [];
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+        for (let k = 0; k < perEdge; k++) out.push([ax + (bx - ax) * k / perEdge, ay + (by - ay) * k / perEdge]);
+      }
+      return out;
+    }
+    // Midpoint-subdivide triangles once: injects interior points on the flat
+    // faces so FPS samples the whole face, not just the rim outline.
+    function subdivideTrianglesOnce(posArr, idxArr) {
+      const pos = Array.from(posArr), idx = idxArr;
+      const mid = new Map();
+      const key = (a, b) => a < b ? a + '-' + b : b + '-' + a;
+      const midOf = (a, b) => {
+        const k = key(a, b);
+        if (!mid.has(k)) {
+          mid.set(k, pos.length / 3);
+          pos.push((pos[a*3] + pos[b*3]) / 2, (pos[a*3+1] + pos[b*3+1]) / 2, (pos[a*3+2] + pos[b*3+2]) / 2);
+        }
+        return mid.get(k);
+      };
+      const out = [];
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t], b = idx[t+1], c = idx[t+2];
+        const ab = midOf(a, b), bc = midOf(b, c), ca = midOf(c, a);
+        out.push(a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca);
+      }
+      return { pos: new Float32Array(pos), idx: new Uint32Array(out) };
+    }
+    function extrudeBuilder(name) {
+      const sources = { star: starPts, gear: gearPts, cross: crossPts, hexagon: () => polygonPts(6, 1) };
+      const perEdge = { star: 15, gear: 8, cross: 20, hexagon: 40 }[name];
+      const raw = sources[name]();
+      const pts = subdivideOutline(raw, perEdge);
+      const shape = new THREE.Shape();
+      shape.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+      shape.closePath();
+      // Thin slab: depth comparable to the FPS point spacing so k-NN bridges
+      // front/back faces into one connected solid. Thick (0.6) slabs leave the
+      // two faces as disconnected flat patterns.
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.18, bevelEnabled: false });
+      const pos = geo.getAttribute('position').array;
+      const idx = geo.getIndex() ? geo.getIndex().array : new Array(pos.length / 3).fill(0).map((_, i) => i);
+      const sub = subdivideTrianglesOnce(pos, idx);
+      geo.dispose();
+      const result = new THREE.BufferGeometry();
+      result.setAttribute('position', new THREE.BufferAttribute(sub.pos, 3));
+      result.setIndex(new THREE.BufferAttribute(sub.idx, 1));
+      return result;
+    }
+
+    function spiralBuilder() {
+      const pts = [];
+      const turns = 3.2, height = 1.6, radius = 0.5, steps = 140;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const a = t * Math.PI * 2 * turns;
+        pts.push(new THREE.Vector3(Math.cos(a) * radius, (t - 0.5) * height, Math.sin(a) * radius));
+      }
+      const curve = new THREE.CatmullRomCurve3(pts);
+      return new THREE.TubeGeometry(curve, 160, 0.075, 8, false);
+    }
+
+    // True 4-sided pyramid with each triangular face tessellated into a dense
+    // in-plane grid. ConeGeometry(…, 4, 1) welds to 6 vertices (FPS collapses
+    // to a degenerate cluster); ConeGeometry(…, 4, H) is a 2-wide ladder grid.
+    // Face tessellation gives FPS an isotropic point field → real triangles.
+    function buildPyramidGeometry() {
+      const R = 0.5, y0 = -0.425;
+      const apex = [0, 0.425, 0];
+      const corners = [];
+      for (let i = 0; i < 4; i++) {
+        const a = (i * 90 + 45) * Math.PI / 180;
+        corners.push([Math.cos(a) * R, y0, Math.sin(a) * R]);
+      }
+      const pos = [];
+      const sub = 16;
+      const tri = (A, B, C) => {
+        for (let i = 0; i < sub; i++) {
+          for (let j = 0; j < sub - i; j++) {
+            const p = (u, v) => [
+              A[0] * (1 - u - v) + B[0] * u + C[0] * v,
+              A[1] * (1 - u - v) + B[1] * u + C[1] * v,
+              A[2] * (1 - u - v) + B[2] * u + C[2] * v,
+            ];
+            const p00 = p(i / sub, j / sub), p10 = p((i + 1) / sub, j / sub);
+            const p01 = p(i / sub, (j + 1) / sub), p11 = p((i + 1) / sub, (j + 1) / sub);
+            pos.push(...p00, ...p10, ...p01, ...p10, ...p11, ...p01);
+          }
+        }
+      };
+      for (let i = 0; i < 4; i++) tri(apex, corners[i], corners[(i + 1) % 4]);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      return geo;
+    }
+
+    const PROCEDURAL_BUILDERS = {
+      cube:     () => new THREE.BoxGeometry(0.5, 0.5, 0.5, 16, 16, 16),
+      cylinder: () => new THREE.CylinderGeometry(0.5, 0.5, 1.0, 32, 16),
+      pyramid:  () => buildPyramidGeometry(),
+      cone:     () => new THREE.ConeGeometry(0.5, 0.85, 32, 16),
+      torus:    () => new THREE.TorusGeometry(0.45, 0.18, 32, 32),
+      gem:      () => displacedIcosahedron('gem'),
+      rock:     () => displacedIcosahedron('rock'),
+      crystal:  () => displacedIcosahedron('crystal'),
+      pebble:   () => displacedIcosahedron('pebble'),
+      vase:     () => latheBuilder('vase'),
+      goblet:   () => latheBuilder('goblet'),
+      rocket:   () => latheBuilder('rocket'),
+      bowl:     () => latheBuilder('bowl'),
+      star:     () => extrudeBuilder('star'),
+      gear:     () => extrudeBuilder('gear'),
+      cross:    () => extrudeBuilder('cross'),
+      hexagon:  () => extrudeBuilder('hexagon'),
+      knot:     () => new THREE.TorusKnotGeometry(0.4, 0.14, 96, 16),
+      spiral:   () => spiralBuilder(),
+    };
+    const PROCEDURAL_NAMES = Object.keys(PROCEDURAL_BUILDERS);
+    // G1: per-builder base scale so each name lands at its current absolute
+    // size. Native primitives keep their geometry as-is (scale 1); everything
+    // else is normalized to the 0.55r tier-0 bulk.
+    const BASE_SCALES = {
+      cube: 1, cylinder: 1, pyramid: 1, cone: 1, torus: 1,
+    };
+    const REF_RADIUS = 0.55;
+    const SIZE_SCALES = { small: 0.7, medium: 1.0, large: 1.4 };
+    const PROC_CACHE = new Map();
+
+    function baseScaleFor(type, radius) {
+      return BASE_SCALES[type] ?? (REF_RADIUS / (radius || REF_RADIUS));
+    }
+
+    // Cached base build. Key = (type, params) only — mods, blend, size, and
+    // edges never touch the cache. `force` clears a base key.
+    function getBase(type, params, force) {
+      const key = `${type}:${JSON.stringify(params || {})}`;
+      if (force) PROC_CACHE.delete(key);
+      let entry = PROC_CACHE.get(key);
+      if (!entry) {
+        const builder = PROCEDURAL_BUILDERS[type];
+        if (!builder) throw new Error(`Unknown object type: ${type}`);
+        const geo = builder(params || {});
+        const result = targetsFromGeometry(geo);
+        geo.dispose();
+        let radius = 0;
+        for (const p of result.targets) radius = Math.max(radius, Math.hypot(p.x, p.y, p.z));
+        entry = { targets: result.targets, radius };
+        PROC_CACHE.set(key, entry);
+      }
+      return entry;
+    }
+
+    function scaleTargets(targets, s) {
+      for (const p of targets) { p.x *= s; p.y *= s; p.z *= s; }
+      return targets;
+    }
+
+    function copyTargets(targets) {
+      return targets.map(p => ({ x: p.x, y: p.y, z: p.z }));
+    }
+
+    // ─── Modifiers on target arrays (not geometry) ────────────────────────
+    // Pointwise, topology-independent, applied post-FPS in fixed order
+    // squash → bend → twist → taper → bulge → spherize → jitter. Each is a
+    // function of the point's normalized height (or plain coordinates), so a
+    // 478-point pass stays ~1ms. Works in place on the target copy.
+    function normHeight(pts) {
+      let maxY = 1e-6;
+      for (const p of pts) maxY = Math.max(maxY, Math.abs(p.y));
+      return (p) => Math.max(-1, Math.min(1, p.y / maxY));
+    }
+    function squashPoints(pts, kx, ky, kz) {
+      for (const p of pts) { p.x *= kx; p.y *= ky; p.z *= kz; }
+    }
+    function bendPoints(pts, r) {
+      const nh = normHeight(pts);
+      for (const p of pts) p.x += r * nh(p) * nh(p);
+    }
+    function twistPoints(pts, deg) {
+      const nh = normHeight(pts);
+      const rad = deg * Math.PI / 180;
+      for (const p of pts) {
+        const a = nh(p) * rad;
+        const c = Math.cos(a), s = Math.sin(a);
+        const x = p.x, z = p.z;
+        p.x = x * c - z * s;
+        p.z = x * s + z * c;
+      }
+    }
+    function taperPoints(pts, k) {
+      const nh = normHeight(pts);
+      for (const p of pts) {
+        const f = 1 - k * ((nh(p) + 1) / 2);
+        p.x *= f; p.z *= f;
+      }
+    }
+    function bulgePoints(pts, k) {
+      const nh = normHeight(pts);
+      for (const p of pts) {
+        const f = 1 + k * (1 - nh(p) * nh(p));
+        p.x *= f; p.z *= f;
+      }
+    }
+    function spherizePoints(pts, k) {
+      let meanR = 0;
+      for (const p of pts) meanR += Math.hypot(p.x, p.y, p.z);
+      meanR /= pts.length || 1;
+      for (const p of pts) {
+        const l = Math.hypot(p.x, p.y, p.z) || 1e-6;
+        const t = l + (meanR - l) * k;
+        p.x *= t / l; p.y *= t / l; p.z *= t / l;
+      }
+    }
+    function jitterPoints(pts, amp, seed) {
+      const s = (typeof seed === 'number' ? seed : hashString(String(seed ?? 'surprise'))) >>> 0;
+      for (let i = 0; i < pts.length; i++) {
+        const rng = mulberry32((s + i * 7919) >>> 0);
+        pts[i].x += (rng() - 0.5) * amp;
+        pts[i].y += (rng() - 0.5) * amp;
+        pts[i].z += (rng() - 0.5) * amp;
+      }
+    }
+    function applyMods(pts, mods, seed) {
+      if (mods.squash) squashPoints(pts, mods.squash.kx ?? 1, mods.squash.ky ?? 1, mods.squash.kz ?? 1);
+      if (mods.bend) bendPoints(pts, mods.bend);
+      if (mods.twist) twistPoints(pts, mods.twist);
+      if (mods.taper) taperPoints(pts, mods.taper);
+      if (mods.bulge) bulgePoints(pts, mods.bulge);
+      if (mods.spherize) spherizePoints(pts, mods.spherize);
+      if (mods.jitter) jitterPoints(pts, mods.jitter, seed);
+      return pts;
+    }
+
+    // ─── Blend morphing ───────────────────────────────────────────────────
+    // Pure 478-point lerp over cached bases. Both bases are size-normalized
+    // to a common reference before lerp — B is scaled to A's radius, so
+    // ratio=0 ≈ A exactly (G1) and the size is applied after.
+    function blendTargets(A, B, ratio) {
+      const bScale = A.radius / (B.radius || 1e-6);
+      const out = new Array(NUM);
+      for (let i = 0; i < NUM; i++) {
+        const ax = A.targets[i].x, ay = A.targets[i].y, az = A.targets[i].z;
+        out[i] = {
+          x: ax + (B.targets[i].x * bScale - ax) * ratio,
+          y: ay + (B.targets[i].y * bScale - ay) * ratio,
+          z: az + (B.targets[i].z * bScale - az) * ratio,
+        };
+      }
+      return out;
+    }
+
+    // Turn a spec into final 478-point targets and swap in the shared globals.
+    function buildProceduralTargets(spec, force) {
+      const A = getBase(spec.type, spec.params, force);
+      let targets;
+      if (spec.blend && PROCEDURAL_NAMES.includes(spec.blend.with) && spec.blend.with !== spec.type) {
+        const B = getBase(spec.blend.with, undefined, force);
+        targets = blendTargets(A, B, Math.max(0, Math.min(1, spec.blend.ratio ?? 0.5)));
+      } else {
+        targets = copyTargets(A.targets);
+      }
+      const baseScale = baseScaleFor(spec.type, A.radius);
+      if (baseScale !== 1) scaleTargets(targets, baseScale);
+      if (spec.mods && Object.keys(spec.mods).length) applyMods(targets, spec.mods, spec.seed);
+      const ss = SIZE_SCALES[spec.size || 'medium'] || 1.0;
+      if (ss !== 1.0) scaleTargets(targets, ss);
+      const fpsEdges = nearestNeighborEdges(targets, 6);
+      shapeTargets = targets;
       shapeTargetEdgeIndices = [];
       for (const [a, b] of fpsEdges) shapeTargetEdgeIndices.push(a, b);
-
-      geo.dispose();
-      return true;
+      return targets;
     }
 
-    function getTargetsForShape(name) {
-      if (name === 'face') return faceLMs;
-      if (name === 'sphere') return icoPoints;
-      return shapeTargets;
+    function deactivateShapePills() {
+      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', false));
     }
 
-    async function switchShape(name) {
+    async function spawnObject(spec, legacySize, legacyOpts = {}) {
+      if (typeof spec === 'string') spec = { type: spec, size: legacySize || 'medium', ...legacyOpts };
+      const type = spec.type;
+      if (type === 'face' || type === 'sphere' || type === 'model') {
+        interruptMorph();
+        await switchShape(type, spec);
+        return type;
+      }
+      const targets = buildProceduralTargets(spec, legacyOpts.force);
+      currentShape = type;
+      window.__scene.spec = spec;
+      deactivateShapePills();
+      interruptMorph();
+      morphTo(type, targets);
+      return type;
+    }
+
+    // switchShape keeps only face/sphere/model semantics. Procedural names
+    // route through the spec path (spawnObject), so a voice "cube" and the
+    // cube pill are the same path by construction.
+    async function switchShape(name, spec = {}) {
       if (isAnimating || name === currentShape) return;
       const prevShape = currentShape;
       currentShape = name;
@@ -1065,19 +1501,32 @@
       // Update pill active states
       document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === name));
 
-      // Load GLB for all non-face shapes (solid mesh replacement)
-      if (name !== 'face' && name !== 'sphere' && name !== prevShape) {
-        try { if (!await loadShapeGLB(name)) { currentShape = prevShape; return; } } catch (e) { console.warn('Shape load failed:', e); currentShape = prevShape; return; }
+      if (name === 'face') { morphTo(name, faceLMs); return; }
+      if (name === 'sphere') { morphTo(name, icoPoints); return; }
+      if (name === 'model') {
+        try {
+          const ok = await loadGLBFromURL(spec.url || GLB_MODEL_URL);
+          if (!ok) { currentShape = prevShape; return; }
+        } catch (e) {
+          console.warn('Model load failed:', e);
+          currentShape = prevShape;
+          throw e;
+        }
+        const ss = SIZE_SCALES[spec.size || 'medium'] || 1.0;
+        if (ss !== 1.0) scaleTargets(shapeTargets, ss);
+        window.__scene.spec = { ...spec, type: 'model' };
+        morphTo(name, shapeTargets);
+        return;
       }
+      currentShape = prevShape;
+    }
 
-      const targets = getTargetsForShape(name);
-      if (!targets) { currentShape = prevShape; return; }
-
-      // If landing state, morph from ico to shape/face
+    // Shared morph entry — handles the landing reveal (overlay fade, camera
+    // pull-back, agent-ui/nav reveal) and the in-agent morph.
+    function morphTo(name, targets) {
       if (state === 'landing') {
         if (name === 'face') { triggerTransform(); return; }
         if (name === 'sphere') return; // Already a sphere
-        // Morph from ico to solid shape
         gsap.to('#overlay', { opacity: 0, duration: 0.5 });
         morphToTarget(targets, name, 2.0);
         gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
@@ -1118,9 +1567,12 @@
       const tIgOp = isSphere ? 0.10 : 0.12;
 
       let indicesSwapped = false;
+      let morphObj = { progress: 0 };
 
-      const morphObj = { progress: 0 };
-      gsap.to(morphObj, {
+      // Kill any in-flight morph cleanly (barge-in). The killed tween leaves
+      // positions mid-morph; a new morphToTarget snapshots the live buffer.
+      if (activeMorphTween) activeMorphTween.kill();
+      activeMorphTween = gsap.to(morphObj, {
         progress: 1, duration, ease: 'power2.inOut',
         onUpdate: () => {
           const t = easeInOutCubic(morphObj.progress);
@@ -1171,6 +1623,7 @@
           icoEdgeGlowMat.opacity = tIgOp;
 
           isAnimating = false;
+          activeMorphTween = null;
           if (isShape && shapeName !== 'face') state = 'agent';
           if (window.__scene) window.__scene.state = state;
         }
@@ -1178,8 +1631,19 @@
     }
 
     // --- Shape pill click handlers ---
+    // Pills interrupt any in-flight morph (same as voice barge-in) and route
+    // procedural names through the spec path; face/sphere/model keep
+    // switchShape semantics (the model pill loads the Duck by default).
     document.querySelectorAll('.shape-pill').forEach(pill => {
-      pill.addEventListener('click', () => switchShape(pill.dataset.shape));
+      pill.addEventListener('click', () => {
+        const name = pill.dataset.shape;
+        interruptMorph();
+        if (name === 'face' || name === 'sphere' || name === 'model') {
+          switchShape(name);
+        } else {
+          spawnObject({ type: name, size: 'medium' });
+        }
+      });
     });
 
     // --- FPS monitor + render loop ---
@@ -1212,7 +1676,7 @@
       // --- Agent mode animation ---
       if (state === 'agent' && window.__scene?.behavior && workingBuffer && baseLMs) {
         const isFaceMode = currentShape === 'face' || currentShape === 'sphere';
-        const isSolidShape = currentShape === 'cube' || currentShape === 'cylinder' || currentShape === 'pyramid' || currentShape === 'torus' || currentShape === 'model';
+        const isSolidShape = !isFaceMode;
         const b = window.__scene.behavior.update(dt);
         const t = time / 1000;
 
@@ -1252,7 +1716,7 @@
           for (const idx of LOWER_LIDS) if (workingBuffer[idx]) workingBuffer[idx].y += b.blink * 0.08 * 0.3;
         }
 
-        // Iris position updates (F12)
+        // Gaze-driven iris placement (active in face mode)
         const iris = computeIrisPositions(b.gazeX, b.gazeY);
         if (workingBuffer[468]) { workingBuffer[468].x = iris.left.x; workingBuffer[468].y = iris.left.y; workingBuffer[468].z = iris.left.z; }
         if (workingBuffer[473]) { workingBuffer[473].x = iris.right.x; workingBuffer[473].y = iris.right.y; workingBuffer[473].z = iris.right.z; }
@@ -1267,13 +1731,13 @@
         icoEdgeGlow.geometry.attributes.position.needsUpdate = true;
         updateFaceGeometry(positions);
 
-        // --- Contour glow pulse (F5) ---
+        // Contour glow pulse (face mode only)
         if (faceContourGlow) {
           faceContourGlow.material.opacity = 0.18 + Math.sin(t * 2.5) * 0.04;
         }
         } // end isFaceMode
 
-        // --- Head group animation (F11/F15) — scroll-aware ---
+        // Head motion — scroll-aware in face mode, free inertial spin for solids
         const scrollY = ScrollController.faceOffsetY;
         const scrolling = ScrollController.isFaceScrolling();
         const atRest = ScrollController.isFaceAtRest();
@@ -1694,13 +2158,16 @@
     const voiceRealtime = new VoiceRealtime({
       voice: 'shimmer',
       tools: {
-        switch_shape: async ({ shape }) => {
-          if (!shape) return 'No shape specified.';
+        spawn_object: async ({ object, size }) => {
+          if (!object) return 'No object specified.';
+          if (!PROCEDURAL_NAMES.includes(object) && object !== 'face' && object !== 'sphere' && object !== 'model') {
+            return `Unknown object "${object}". Valid types: ${PROCEDURAL_NAMES.join(', ')}, face, sphere, model.`;
+          }
           try {
-            await switchShape(shape);
-            return `Switched to ${shape} shape.`;
+            await spawnObject(object, size || 'medium');
+            return `Spawned ${object}.`;
           } catch (e) {
-            return `Failed to switch shape: ${e.message}`;
+            return `Failed to spawn ${object}: ${e.message}`;
           }
         },
       },
@@ -1796,6 +2263,10 @@
       get workingBuffer() { return workingBuffer; },
       get jawWeights() { return jawWeights; },
       get mouthCavityMesh() { return faceMouthCavity; },
+      get currentShape() { return currentShape; },
+      get shapeTargets() { return shapeTargets; },
+      get shapeTargetEdgeIndices() { return shapeTargetEdgeIndices; },
+      spawnObject: (name, size, opts) => spawnObject(name, size, opts),
     };
   </script>
 </body>
