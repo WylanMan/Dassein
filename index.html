@@ -1060,9 +1060,16 @@
     // farthestPointSampling stays loud). Parameterized families tune their
     // tessellation so this holds at every parameter combination.
     //
-    // Unified spec: { type, size='medium', params={}, mods={}, blend={with, ratio}, seed, url }.
+    // Unified spec: { type, size='medium', params={}, mods={}, blend={with, ratio},
+    // union=[...], parts=[...], seed, url }.
+    //   parts (A1): compound forms. Each part = { type, params, pos, rot,
+    //     scale, mods, seed }. First part is the anchor at the origin; others
+    //     attach relative to it. rot = 'up'|'flat'|'side' or {preset, deg} —
+    //     never raw Euler angles. ≤12 parts, pos clamped to the ±0.8 work
+    //     volume. Part points merge before weld → FPS (same as union/helix).
     // Bases are welded + FPS'd ONCE and cached by (type, params) only (small,
-    // bounded ~26 entries). Mods, blend, size, and edges are cheap 478-point
+    // bounded ~80 entries; compounds cache under a composite parts key).
+    // Mods, blend, size, and edges are cheap 478-point
     // array ops recomputed per spawn. Deterministic: seeded noise + fixed FPS
     // seed → same spec always produces the same net.
     //
@@ -1134,11 +1141,15 @@
       return geo;
     }
 
+    // Lathe profiles in the canonical [[y, r]...] convention — height first,
+    // radius second (A3). Presets keep their existing silhouettes; an explicit
+    // `profile` param overrides the preset so any simple solid-of-revolution
+    // (cup, chess piece, lantern body) can be spelled out by spec.
     const LATHE_PROFILES = {
-      vase:   [[0, -1], [0.3, -0.9], [0.62, -0.6], [0.66, -0.25], [0.4, 0.05], [0.24, 0.3], [0.26, 0.48], [0.34, 0.52], [0.3, 0.85]],
-      goblet: [[0, -1], [0.2, -1], [0.2, -0.85], [0.12, -0.7], [0.06, -0.5], [0.05, -0.3], [0.42, 0.05], [0.52, 0.3], [0.38, 0.55], [0.3, 0.75], [0.18, 0.85], [0, 0.85]],
-      rocket: [[0, -1], [0.34, -1], [0.34, 0.15], [0.2, 0.45], [0.09, 0.72], [0, 0.95]],
-      bowl:   [[0, -0.72], [0.3, -0.7], [0.55, -0.55], [0.62, -0.3], [0.62, 0.15], [0.5, 0.42], [0, 0.5]],
+      vase:   [[-1, 0], [-0.9, 0.3], [-0.6, 0.62], [-0.25, 0.66], [0.05, 0.4], [0.3, 0.24], [0.48, 0.26], [0.52, 0.34], [0.85, 0.3]],
+      goblet: [[-1, 0], [-1, 0.2], [-0.85, 0.2], [-0.7, 0.12], [-0.5, 0.06], [-0.3, 0.05], [0.05, 0.42], [0.3, 0.52], [0.55, 0.38], [0.75, 0.3], [0.85, 0.18], [0.85, 0]],
+      rocket: [[-1, 0], [-1, 0.34], [0.15, 0.34], [0.45, 0.2], [0.72, 0.09], [0.95, 0]],
+      bowl:   [[-0.72, 0], [-0.7, 0.3], [-0.55, 0.55], [-0.3, 0.62], [0.15, 0.62], [0.42, 0.5], [0.5, 0]],
     };
 
     // Subdivide each profile segment so the lathe has many distinct height
@@ -1146,8 +1157,8 @@
     function subdivideProfile(pts, perSeg) {
       const out = [];
       for (let i = 0; i < pts.length - 1; i++) {
-        const [r0, h0] = pts[i], [r1, h1] = pts[i + 1];
-        for (let k = 0; k < perSeg; k++) out.push([r0 + (r1 - r0) * k / perSeg, h0 + (h1 - h0) * k / perSeg]);
+        const [y0, r0] = pts[i], [y1, r1] = pts[i + 1];
+        for (let k = 0; k < perSeg; k++) out.push([y0 + (y1 - y0) * k / perSeg, r0 + (r1 - r0) * k / perSeg]);
       }
       out.push(pts[pts.length - 1]);
       return out;
@@ -1155,12 +1166,16 @@
 
     function latheBuilder(name, params = {}) {
       // bulge scales every ring outward; waist constricts the mid-height rings.
+      // Negative radii are clamped to 0 so malformed profiles never fold the
+      // surface inside-out (profile sanitization, tier-2).
       const bulge = params.bulge ?? 0;
       const waist = params.waist ?? 0;
-      const pts = subdivideProfile(LATHE_PROFILES[name], 8).map(([r, h]) => {
-        let rr = r * (1 + bulge);
-        if (waist) rr *= 1 - waist * Math.max(0, 1 - Math.abs(h) * 1.2);
-        return new THREE.Vector2(rr, h);
+      const profile = params.profile || LATHE_PROFILES[name];
+      if (!profile || profile.length < 2) throw new Error(`Unknown lathe profile: ${name}`);
+      const pts = subdivideProfile(profile, 8).map(([y, r]) => {
+        let rr = Math.max(0, r) * (1 + bulge);
+        if (waist) rr *= 1 - waist * Math.max(0, 1 - Math.abs(y) * 1.2);
+        return new THREE.Vector2(rr, y);
       });
       // 96 segments × subdivided profile → thousands of welded verts, so FPS
       // samples spread across the whole surface, not horizontal rings.
@@ -1234,8 +1249,13 @@
     function extrudeBuilder(name, params = {}) {
       // Per-edge subdivision scales with the outline point count so extruded
       // families keep ≥478 welded verts at every parameter combination.
+      // An explicit `profile` ([[x, y]...]) overrides the presets — any flat
+      // outline shape (key head, cross-section, glyph) can be spelled out.
       let raw, perEdge;
-      if (name === 'star') {
+      if (params.profile) {
+        raw = params.profile;
+        perEdge = Math.max(6, Math.round(240 / Math.max(3, raw.length)));
+      } else if (name === 'star') {
         const sides = Math.max(3, Math.round(params.sides || 5));
         raw = starPts(sides, params.inner ?? 0.45);
         perEdge = Math.max(8, Math.round(75 / sides));
@@ -1258,8 +1278,8 @@
       shape.closePath();
       // Thin slab: depth comparable to the FPS point spacing so k-NN bridges
       // front/back faces into one connected solid. Thick (0.6) slabs leave the
-      // two faces as disconnected flat patterns.
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.18, bevelEnabled: false });
+      // two faces as disconnected flat patterns. `depth` tunes it explicitly.
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: params.depth ?? 0.18, bevelEnabled: false });
       const pos = geo.getAttribute('position').array;
       const idx = geo.getIndex() ? geo.getIndex().array : new Array(pos.length / 3).fill(0).map((_, i) => i);
       const sub = subdivideTrianglesOnce(pos, idx);
@@ -1402,7 +1422,7 @@
         let radius = 0;
         for (const p of result.targets) radius = Math.max(radius, Math.hypot(p.x, p.y, p.z));
         entry = { targets: result.targets, radius };
-        PROC_CACHE.set(key, entry);
+        cachePut(key, entry);
       }
       return entry;
     }
@@ -1438,9 +1458,123 @@
         let radius = 0;
         for (const p of result.targets) radius = Math.max(radius, Math.hypot(p.x, p.y, p.z));
         entry = { targets: result.targets, radius };
-        PROC_CACHE.set(key, entry);
+        cachePut(key, entry);
       }
       return entry;
+    }
+
+    // Compound base (A1): assemble a form from `parts`. Each part builds
+    // through the same PROCEDURAL_BUILDERS, then gets its per-part transform
+    // applied on the raw position array BEFORE the shared weld → FPS step — the
+    // same mechanism as `union`/`helix`, so the 478-point net samples every
+    // part's surface in one solid. All transforms are pointwise and
+    // deterministic, so the composite caches under one key.
+    //
+    // Legibility grammar (A2):
+    //   - First part is the ANCHOR — it sits at the origin; every later part's
+    //     pos is relative to it.
+    //   - rot uses the orientation vocabulary 'up'|'flat'|'side' (never raw
+    //     Euler angles), with an optional {preset, deg} spin about the part's
+    //     local up axis.
+    //   - ≤12 parts; pos is clamped into the ±1.4r work volume so k-NN edges
+    //     never bridge distant islands.
+    const ROT_PRESETS = {
+      up:   [0, 0, 0],
+      flat: [Math.PI / 2, 0, 0],   // lay down along Z (vertical shape → on its side)
+      side: [0, 0, Math.PI / 2],   // lay down along X
+    };
+    const WORK_VOLUME = 0.8; // ~1.45 × the 0.55r reference bulk
+
+    function rotatePointsArr(arr, rx, ry, rz) {
+      const cx = Math.cos(rx), sx = Math.sin(rx);
+      const cy = Math.cos(ry), sy = Math.sin(ry);
+      const cz = Math.cos(rz), sz = Math.sin(rz);
+      for (let i = 0; i < arr.length; i += 3) {
+        let x = arr[i], y = arr[i + 1], z = arr[i + 2];
+        const y2 = y * cx - z * sx, z2 = y * sx + z * cx;
+        y = y2; z = z2;
+        const x2 = x * cz - y * sz, y3 = x * sz + y * cz;
+        x = x2; y = y3;
+        const x3 = x * cy + z * sy, z3 = -x * sy + z * cy;
+        arr[i] = x3; arr[i + 1] = y; arr[i + 2] = z3;
+      }
+    }
+
+    function applyModsFlat(arr, mods, seed) {
+      const pts = new Array(arr.length / 3);
+      for (let i = 0; i < pts.length; i++) pts[i] = { x: arr[i * 3], y: arr[i * 3 + 1], z: arr[i * 3 + 2] };
+      applyMods(pts, mods, seed);
+      for (let i = 0; i < pts.length; i++) { arr[i * 3] = pts[i].x; arr[i * 3 + 1] = pts[i].y; arr[i * 3 + 2] = pts[i].z; }
+    }
+
+    // Pointwise transform for one compound part: mods (local frame) → scale →
+    // rotate (preset + spin) → translate (clamped into the work volume).
+    function applyPartTransform(arr, part) {
+      if (part.mods && Object.keys(part.mods).length) applyModsFlat(arr, part.mods, part.seed ?? 0);
+      let sx = 1, sy = 1, sz = 1;
+      if (typeof part.scale === 'number') { sx = sy = sz = part.scale; }
+      else if (Array.isArray(part.scale)) { sx = part.scale[0] ?? 1; sy = part.scale[1] ?? 1; sz = part.scale[2] ?? 1; }
+      let rx = 0, ry = 0, rz = 0;
+      const rot = part.rot ?? 'up';
+      if (typeof rot === 'string') { const p = ROT_PRESETS[rot]; if (p) { rx = p[0]; rz = p[2]; } }
+      else if (rot && typeof rot === 'object') {
+        const p = ROT_PRESETS[rot.preset || 'up'];
+        if (p) { rx = p[0]; rz = p[2]; }
+        ry = ((Number(rot.deg) || 0) * Math.PI) / 180;
+      }
+      if (rx || ry || rz) rotatePointsArr(arr, rx, ry, rz);
+      let px = part.pos?.[0] ?? 0, py = part.pos?.[1] ?? 0, pz = part.pos?.[2] ?? 0;
+      const m = Math.hypot(px, py, pz);
+      if (m > WORK_VOLUME) { px *= WORK_VOLUME / m; py *= WORK_VOLUME / m; pz *= WORK_VOLUME / m; }
+      for (let i = 0; i < arr.length; i += 3) {
+        arr[i] = arr[i] * sx + px;
+        arr[i + 1] = arr[i + 1] * sy + py;
+        arr[i + 2] = arr[i + 2] * sz + pz;
+      }
+    }
+
+    function getCompoundBase(parts, force) {
+      const key = 'compound:' + parts.map(p => JSON.stringify({
+        type: p.type, params: p.params || {}, pos: p.pos || [0, 0, 0],
+        rot: p.rot || 'up', scale: p.scale || 1, mods: p.mods || {}, seed: p.seed ?? 0,
+      })).join('|');
+      if (force) PROC_CACHE.delete(key);
+      let entry = PROC_CACHE.get(key);
+      if (!entry) {
+        const posArrays = [];
+        for (const part of parts) {
+          const builder = PROCEDURAL_BUILDERS[part.type];
+          if (!builder) throw new Error(`Unknown object type: ${part.type}`);
+          const geo = builder(part.params || {});
+          const arr = new Float32Array(geo.getAttribute('position').array);
+          geo.dispose();
+          applyPartTransform(arr, part);
+          posArrays.push(arr);
+        }
+        const total = posArrays.reduce((n, a) => n + a.length, 0);
+        const arr = new Float32Array(total);
+        let off = 0;
+        for (const a of posArrays) { arr.set(a, off); off += a.length; }
+        const merged = new THREE.BufferGeometry();
+        merged.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        const result = targetsFromGeometry(merged);
+        merged.dispose();
+        let radius = 0;
+        for (const p of result.targets) radius = Math.max(radius, Math.hypot(p.x, p.y, p.z));
+        entry = { targets: result.targets, radius };
+        cachePut(key, entry);
+      }
+      return entry;
+    }
+
+    // Cache is bounded (compound specs can be high-cardinality): evict the
+    // oldest entry past the cap so a long voice session stays light.
+    function cachePut(key, entry) {
+      PROC_CACHE.set(key, entry);
+      if (PROC_CACHE.size > 80) {
+        const oldest = PROC_CACHE.keys().next().value;
+        PROC_CACHE.delete(oldest);
+      }
     }
 
     function scaleTargets(targets, s) {
@@ -1544,9 +1678,12 @@
 
     // Turn a spec into final 478-point targets and swap in the shared globals.
     function buildProceduralTargets(spec, force) {
-      // union: merge two+ base geometries into one net before mods/blend/size.
-      const isUnion = Array.isArray(spec.union) && spec.union.length >= 2;
-      const A = isUnion ? getUnionBase(spec.union, force) : getBase(spec.type, spec.params, force);
+      // Route: spec.parts → compound path; else union; else single type (A1).
+      const isCompound = Array.isArray(spec.parts) && spec.parts.length > 0;
+      const isUnion = !isCompound && Array.isArray(spec.union) && spec.union.length >= 2;
+      const A = isCompound
+        ? getCompoundBase(spec.parts, force)
+        : (isUnion ? getUnionBase(spec.union, force) : getBase(spec.type, spec.params, force));
       let targets;
       if (spec.blend && PROCEDURAL_NAMES.includes(spec.blend.with) && spec.blend.with !== spec.type) {
         const B = getBase(spec.blend.with, undefined, force);
@@ -1554,9 +1691,10 @@
       } else {
         targets = copyTargets(A.targets);
       }
-      // Unions are new composite forms → normalize to the reference bulk like
-      // any non-native builder (G1 applies to the member names individually).
-      const baseScale = isUnion ? (REF_RADIUS / A.radius) : baseScaleFor(spec.type, A.radius);
+      // Compounds and unions are new composite forms → normalize to the
+      // reference bulk like any non-native builder (G1 applies to the member
+      // names individually).
+      const baseScale = (isCompound || isUnion) ? (REF_RADIUS / A.radius) : baseScaleFor(spec.type, A.radius);
       if (baseScale !== 1) scaleTargets(targets, baseScale);
       if (spec.mods && Object.keys(spec.mods).length) applyMods(targets, spec.mods, spec.seed);
       const ss = SIZE_SCALES[spec.size || 'medium'] || 1.0;
@@ -1581,7 +1719,7 @@
         return type;
       }
       const targets = buildProceduralTargets(spec, legacyOpts.force);
-      currentShape = type;
+      currentShape = spec.id || (Array.isArray(spec.parts) ? 'compound' : type);
       window.__scene.spec = spec;
       deactivateShapePills();
       interruptMorph();
