@@ -1109,6 +1109,7 @@
       rock:    { freq: 2.2, amp: 0.4, quant: 0 },
       crystal: { freq: 2.0, amp: 0.55, quant: 0 },
       pebble:  { freq: 1.0, amp: 0.22, quant: 0 },
+      blob:    { freq: 0.7, amp: 0.5, quant: 0 },
     };
 
     function displacedIcosahedron(type) {
@@ -1152,8 +1153,15 @@
       return out;
     }
 
-    function latheBuilder(name) {
-      const pts = subdivideProfile(LATHE_PROFILES[name], 8).map(([r, h]) => new THREE.Vector2(r, h));
+    function latheBuilder(name, params = {}) {
+      // bulge scales every ring outward; waist constricts the mid-height rings.
+      const bulge = params.bulge ?? 0;
+      const waist = params.waist ?? 0;
+      const pts = subdivideProfile(LATHE_PROFILES[name], 8).map(([r, h]) => {
+        let rr = r * (1 + bulge);
+        if (waist) rr *= 1 - waist * Math.max(0, 1 - Math.abs(h) * 1.2);
+        return new THREE.Vector2(rr, h);
+      });
       // 96 segments × subdivided profile → thousands of welded verts, so FPS
       // samples spread across the whole surface, not horizontal rings.
       return new THREE.LatheGeometry(pts, 96);
@@ -1167,18 +1175,18 @@
       }
       return pts;
     }
-    function starPts() {
+    function starPts(sides = 5, inner = 0.45) {
       const pts = [];
-      for (let i = 0; i < 10; i++) {
-        const r = i % 2 === 0 ? 1.0 : 0.45;
-        const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+      const n = sides * 2;
+      for (let i = 0; i < n; i++) {
+        const r = i % 2 === 0 ? 1.0 : inner;
+        const a = (i / n) * Math.PI * 2 - Math.PI / 2;
         pts.push([Math.cos(a) * r, Math.sin(a) * r]);
       }
       return pts;
     }
-    function gearPts() {
+    function gearPts(teeth = 12) {
       const pts = [];
-      const teeth = 12;
       const step = (Math.PI * 2) / (teeth * 4);
       for (let i = 0; i < teeth * 4; i++) {
         const a = i * step - Math.PI / 2;
@@ -1223,10 +1231,26 @@
       }
       return { pos: new Float32Array(pos), idx: new Uint32Array(out) };
     }
-    function extrudeBuilder(name) {
-      const sources = { star: starPts, gear: gearPts, cross: crossPts, hexagon: () => polygonPts(6, 1) };
-      const perEdge = { star: 15, gear: 8, cross: 20, hexagon: 40 }[name];
-      const raw = sources[name]();
+    function extrudeBuilder(name, params = {}) {
+      // Per-edge subdivision scales with the outline point count so extruded
+      // families keep ≥478 welded verts at every parameter combination.
+      let raw, perEdge;
+      if (name === 'star') {
+        const sides = Math.max(3, Math.round(params.sides || 5));
+        raw = starPts(sides, params.inner ?? 0.45);
+        perEdge = Math.max(8, Math.round(75 / sides));
+      } else if (name === 'gear') {
+        const teeth = Math.max(3, Math.round(params.teeth || 12));
+        raw = gearPts(teeth);
+        perEdge = Math.max(4, Math.round(96 / teeth));
+      } else if (name === 'cross') {
+        raw = crossPts();
+        perEdge = 20;
+      } else { // polygon
+        const sides = Math.max(3, Math.round(params.sides || 6));
+        raw = polygonPts(sides, 1);
+        perEdge = Math.max(20, Math.round(240 / sides));
+      }
       const pts = subdivideOutline(raw, perEdge);
       const shape = new THREE.Shape();
       shape.moveTo(pts[0][0], pts[0][1]);
@@ -1246,32 +1270,64 @@
       return result;
     }
 
-    function spiralBuilder() {
+    function spiralBuilder(params = {}) {
       const pts = [];
-      const turns = 3.2, height = 1.6, radius = 0.5, steps = 140;
+      const turns = params.turns ?? 3.2;
+      const height = 1.6, radius = 0.5, steps = 140;
+      const thickness = params.thickness ?? 0.075;
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
         const a = t * Math.PI * 2 * turns;
         pts.push(new THREE.Vector3(Math.cos(a) * radius, (t - 0.5) * height, Math.sin(a) * radius));
       }
       const curve = new THREE.CatmullRomCurve3(pts);
-      return new THREE.TubeGeometry(curve, 160, 0.075, 8, false);
+      return new THREE.TubeGeometry(curve, 160, thickness, 8, false);
     }
 
-    // True 4-sided pyramid with each triangular face tessellated into a dense
+    // Double-strand coil: two helix strands offset by π, merged into one
+    // geometry so the shared weld/FPS path treats it as a single solid.
+    function helixBuilder(params = {}) {
+      const turns = params.turns ?? 2.5;
+      const height = 1.6, radius = 0.5, steps = 120, tubeR = params.thickness ?? 0.09;
+      const p1 = [], p2 = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const a = t * Math.PI * 2 * turns;
+        const y = (t - 0.5) * height;
+        p1.push(new THREE.Vector3(Math.cos(a) * radius, y, Math.sin(a) * radius));
+        p2.push(new THREE.Vector3(Math.cos(a + Math.PI) * radius, y, Math.sin(a + Math.PI) * radius));
+      }
+      const c1 = new THREE.CatmullRomCurve3(p1);
+      const c2 = new THREE.CatmullRomCurve3(p2);
+      const g1 = new THREE.TubeGeometry(c1, 160, tubeR, 8, false);
+      const g2 = new THREE.TubeGeometry(c2, 160, tubeR, 8, false);
+      const a1 = g1.getAttribute('position'), a2 = g2.getAttribute('position');
+      const arr = new Float32Array(a1.count * 3 + a2.count * 3);
+      arr.set(a1.array, 0);
+      arr.set(a2.array, a1.count * 3);
+      const merged = new THREE.BufferGeometry();
+      merged.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      g1.dispose(); g2.dispose();
+      return merged;
+    }
+
+    // True N-sided pyramid with each triangular face tessellated into a dense
     // in-plane grid. ConeGeometry(…, 4, 1) welds to 6 vertices (FPS collapses
     // to a degenerate cluster); ConeGeometry(…, 4, H) is a 2-wide ladder grid.
     // Face tessellation gives FPS an isotropic point field → real triangles.
-    function buildPyramidGeometry() {
+    // The subdivision count grows for low side counts so the welded vert set
+    // stays ≥478 (builder-conformance rule).
+    function buildPyramidGeometry(sides = 4) {
+      sides = Math.max(3, Math.round(sides));
       const R = 0.5, y0 = -0.425;
       const apex = [0, 0.425, 0];
       const corners = [];
-      for (let i = 0; i < 4; i++) {
-        const a = (i * 90 + 45) * Math.PI / 180;
+      for (let i = 0; i < sides; i++) {
+        const a = (i * 360 / sides + 45) * Math.PI / 180;
         corners.push([Math.cos(a) * R, y0, Math.sin(a) * R]);
       }
       const pos = [];
-      const sub = 16;
+      const sub = Math.max(16, Math.ceil(Math.sqrt(478 * 2 / sides)));
       const tri = (A, B, C) => {
         for (let i = 0; i < sub; i++) {
           for (let j = 0; j < sub - i; j++) {
@@ -1286,7 +1342,7 @@
           }
         }
       };
-      for (let i = 0; i < 4; i++) tri(apex, corners[i], corners[(i + 1) % 4]);
+      for (let i = 0; i < sides; i++) tri(apex, corners[i], corners[(i + 1) % sides]);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       return geo;
@@ -1295,23 +1351,26 @@
     const PROCEDURAL_BUILDERS = {
       cube:     () => new THREE.BoxGeometry(0.5, 0.5, 0.5, 16, 16, 16),
       cylinder: () => new THREE.CylinderGeometry(0.5, 0.5, 1.0, 32, 16),
-      pyramid:  () => buildPyramidGeometry(),
+      pyramid:  (p) => buildPyramidGeometry(p.sides),
       cone:     () => new THREE.ConeGeometry(0.5, 0.85, 32, 16),
       torus:    () => new THREE.TorusGeometry(0.45, 0.18, 32, 32),
       gem:      () => displacedIcosahedron('gem'),
       rock:     () => displacedIcosahedron('rock'),
       crystal:  () => displacedIcosahedron('crystal'),
       pebble:   () => displacedIcosahedron('pebble'),
-      vase:     () => latheBuilder('vase'),
-      goblet:   () => latheBuilder('goblet'),
-      rocket:   () => latheBuilder('rocket'),
-      bowl:     () => latheBuilder('bowl'),
-      star:     () => extrudeBuilder('star'),
-      gear:     () => extrudeBuilder('gear'),
+      blob:     () => displacedIcosahedron('blob'),
+      vase:     (p) => latheBuilder('vase', p),
+      goblet:   (p) => latheBuilder('goblet', p),
+      rocket:   (p) => latheBuilder('rocket', p),
+      bowl:     (p) => latheBuilder('bowl', p),
+      star:     (p) => extrudeBuilder('star', p),
+      gear:     (p) => extrudeBuilder('gear', p),
       cross:    () => extrudeBuilder('cross'),
-      hexagon:  () => extrudeBuilder('hexagon'),
+      hexagon:  () => extrudeBuilder('polygon', { sides: 6 }),
+      polygon:  (p) => extrudeBuilder('polygon', p),
       knot:     () => new THREE.TorusKnotGeometry(0.4, 0.14, 96, 16),
-      spiral:   () => spiralBuilder(),
+      spiral:   (p) => spiralBuilder(p),
+      helix:    (p) => helixBuilder(p),
     };
     const PROCEDURAL_NAMES = Object.keys(PROCEDURAL_BUILDERS);
     // G1: per-builder base scale so each name lands at its current absolute

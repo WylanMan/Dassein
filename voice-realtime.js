@@ -9,8 +9,8 @@ const REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 
 const OBJECT_TYPES = [
   'face', 'sphere', 'cube', 'cylinder', 'pyramid', 'cone', 'torus', 'model',
-  'gem', 'rock', 'crystal', 'pebble', 'vase', 'goblet', 'rocket', 'bowl',
-  'star', 'gear', 'cross', 'hexagon', 'knot', 'spiral',
+  'gem', 'rock', 'crystal', 'pebble', 'blob', 'vase', 'goblet', 'rocket', 'bowl',
+  'star', 'gear', 'cross', 'hexagon', 'polygon', 'knot', 'spiral', 'helix',
 ];
 
 const INSTRUCTIONS =
