@@ -1,129 +1,155 @@
-# Dassein — PLAN.md: Tier 2 "Summoning"
+# Dassein — PLAN.md: Tier 3 "Summoning v2" (SDF shape grammar + quality system)
 
-Current authoritative plan. Supersedes the v4 redesign plan, PLAN_TIER1.md, and VOICEPLAN.md. The Tier-1 shape system (spec model, modifiers, blend, cached bases, GLB loading) is implemented in the working tree; step 0 finishes and commits it.
+Current authoritative plan. Supersedes the Tier-2 "Summoning" plan (shipped 2026-07-31: compound builder, profiles, curated library, DeepSeek spec synthesis, voice summoning). Tier 3 replaces the *spec grammar and the net-building pipeline*, not the product surface: pills, voice, face/sphere/model semantics, the 478-point morph, and the summon flow all survive.
 
-## Status — all steps shipped (2026-07-31)
+## Decisions locked (2026-07-31 review)
 
-- **Step 0–5 ✅** — Tier-1 commit, compound builder + profiles (A1/A3), curated library (A4), DeepSeek spike (D2), `/api/summon` (B1/B2/B3 + S17/S19/S21), voice summoning (C1/C2/C3 + S18/S20).
-- **D2 verdict ✅ PASS** — 10/10 concepts built (gate ≥7); identifiability confirmed cold on fully-settled renders. Initial 0/10 was a **capture artifact**: screenshots were taken 350ms into a 1.5s morph (mid-transition frames). Lesson: **summon screenshots must be captured after the morph settles (~2.2s)**, not on spawn.
-- **F3 ✅** — full suite: 31 tests green (`tests/e2e/dassein.spec.js` S1–S16/T-series, `summon.spec.js` S17/S19/S21, `tier2.spec.js` S18/S20). DeepSeek mocked via `DEEPSEEK_BASE_URL` → `tests/support/summon_stub.py` (port 3001).
-- **Deploy ⏸** — all code committed and tested; deployment deferred by choice. `vercel --prod` when ready; `DEEPSEEK_API_KEY` is already set in Vercel Production.
+1. **Aesthetic identity: angular.** Hard booleans are the default idiom; faceted prims and crisp creases are the house look. Smooth ops exist only as an accent (`k ≤ 0.15`). Rationale: the 478-point k-NN wireframe reads best on angular, structural, silhouetted forms; SDFs left unchecked drift blobby, which is the exact "5-of-22-builders-are-displaced-icosahedrons" failure this plan exists to fix.
+2. **No vision model.** Quality verification is **human-in-the-loop only**: a client-side "keep this" affordance feeds a promotion flywheel into the curated few-shot bank. No image critique anywhere.
+3. **Screenshot gate.** Curated re-expressions cut over only after Playwright golden-image diffs against the current renders (settled ≥2.2s).
+4. **Order-aligned FPS.** Shape targets are sampled along **478 canonical reference directions** (the existing `icoPoints` FPS set), so index *i* always means "the surface point along direction *d_i*." This makes shape↔shape morphs coherent — pointwise lerp no longer maps unrelated net positions. The current mush at mid-ratios was unrelated FPS orderings, not blend math.
+5. **Extract `sdf-core.js`.** The pure SDF kernel is a separate ES module (import-mapped), breaking the "all JS inline" convention deliberately so the most bug-prone code in the project is unit-testable in isolation.
 
-## Premise
+## Why the Tier-2 grammar is a 3/10 (the diagnosis)
 
-The agent writes a shape's **DNA** (a spec); the client's Tier-1 pipeline synthesizes the form (build → weld → FPS → 478-point morph). Two sources, one data structure:
+Reading the shipped code end-to-end, the quality ceiling is structural, not the LLM:
 
-1. A **curated spec library** — hand-written specs, deterministic, guaranteed legible, zero API, zero latency.
-2. **DeepSeek-flash spec synthesis** — the cache-miss handler for anything the library lacks.
+- **Composition is crude.** `union` merges point clouds — buried/overlapping surfaces keep their points; `parts` is a flat primitive list (index.html:1537, 1434). Fused, structural shapes are impossible; everything reads as parts bolted on.
+- **Modifiers run on the sampled 478 points** after geometry is destroyed (index.html:1590). `bend` is a parabolic shear (`x += r·h²`), `twist` tears the k-NN net. They distort a wireframe; they don't bend a shape.
+- **Blend is an index-wise lerp of unrelated FPS orderings** (index.html:1666) → crumpled mush at mid-ratios.
+- **The LLM is asked to author coordinates it can't.** Profile lathes require exact `[y,r]` arrays; DeepSeek guesses → lumpy silhouettes.
+- **Few-shot dominance.** Outputs mimic the 16 curated examples (vase/hourglass-lite) instead of the concept.
+- **5 of 22 builders are the same displaced icosahedron** (gem/rock/crystal/pebble/blob, index.html:1115) — one trick, five noise knobs.
 
-Quality bar is **identifiability, not fidelity**. The 478-point wireframe net forgives crudeness; the silhouette must read. A boxy hourglass that reads as an hourglass is a success.
+## Why SDF
 
-## Hard guarantees
+2026 research converged on **Signed Distance Fields as the LLM-native shape language**:
 
-- **G1:** Tier-1 behavior untouched — spec path, pills, face/sphere/model semantics, blends stay as-is. Compound is purely additive.
-- **G2:** No new client-side runtime dependencies; all new deps (DeepSeek) live server-side.
-- **G3:** Every spawned form satisfies the ≥478 unique welded-verts guard; any failed summon degrades to a seeded abstract form + agent narration — never a crash.
+- **ALICE-SDF** (2026): text → LLM → SDF JSON tree (primitives, CSG ops, domain modifiers) → mesh; validates and fix-retries — the architecture Dassein already has.
+- **Curv / atelier-mcp**: "the aesthetic lives in the tools, not the model" — a constrained SDF/CSG operation vocabulary produces consistent output.
+- **Proc3D** (2026): LLM-generated *procedural compact graphs* are 4–10× more token-compact than code DSLs → fewer hallucination errors; constrained graph beats free code.
 
----
+The operative insight: **LLMs can't author coordinates, but they're good at structure.** "A crown is a band hard-unioned with repeated spikes" maps to `union(revolve(profile), polar_repeat(cone))`; "symmetric" maps to `mirror`; "chain" maps to `repeat`. And SDF domain warps (twist/bend/taper) are applied *before* surface extraction → real bends, real twists.
 
-## Part A — Compound builder + curated library (ship first)
-
-### A1. Compound builder (`index.html`)
-Extend the spec grammar: `spec` gains optional `parts: [{type, pos, rot, scale, params, mods}]`.
-- Each part builds via existing `PROCEDURAL_BUILDERS` + `getBase`-style caching (composite parts key).
-- All part point sets merge **before** the weld → FPS step (same mechanism as `union`/`helix`), then FPS to 478 and `nearestNeighborEdges(6)` as today.
-- Parts live in a bounded work volume (±1.4r) so edges never bridge distant islands.
-- Route: `spec.parts` present → compound path; else existing single-type path. `window.__scene.spec` mirrors both.
-
-### A2. Legibility grammar (LLM-positioning weakness mitigation)
-- **Orientation vocabulary:** `rot: 'up'|'flat'|'side'` presets + optional degrees — never raw Euler angles.
-- **Anchor-part pattern:** the first part is the anchor; others attach relative to it (Scenethesis pattern).
-- **Cap ≤ 12 parts.** More parts = more ways to become unreadable.
-
-### A3. Profile-parameterized builders
-- `latheBuilder` gains explicit `profile: [[y, r]...]` (vase/goblet/rocket/bowl become presets).
-- `extrudeBuilder` gains explicit `profile: [[x, y]...]` + depth (star/gear/cross/hexagon become presets).
-- No new builder types for v1 — parts + profiles + mods cover the simple-object vocabulary.
-
-### A4. Curated spec library (12–20 specs)
-Hand-written storytelling specs: hourglass, throne, labyrinth, lantern, key, door, chain, monument, stone arch (bridge), chrysalis, threshold gate, well, sundial, crown, ship, altar. Perfect every time — this is the demo-day deliverable. The library's data structure is identical to the LLM-tier cache entries, and the library doubles as the few-shot example bank in the LLM system prompt.
+Crucially, SDF evaluates pointwise — no meshing needed. We sample the **outer surface directly by radial probing along 478 canonical directions**, which (a) kills the buried-surface problem of the old `union`, (b) gives order-aligned morphs for free, (c) is <5ms per build.
 
 ---
 
-## Part B — LLM synthesis tier (DeepSeek)
+## Phase 0 — Face-as-loading (ship first, ~30 min)
 
-### B1. `POST /api/summon {concept, seed?}` (`server.py` + `api/index.py`)
-Returns a **JSON spec** (never geometry — the client owns building):
-1. Cache lookup by canonical `id` + seed (`.cache/specs/` dev / KV prod). Specs are a few KB — trivial to cache.
-2. Miss → DeepSeek call (OpenAI-compatible; `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL` from env; `response_format: json_object`). System prompt = spec grammar + simple-forms contract + curated library as worked examples. Output includes a **canonical `id`** the LLM chooses ("hourglass_wide") — the cache key, so "a chair" and "chair" collapse to one entry.
-3. Validation: schema, numeric ranges, ≤12 parts, orientation vocabulary, profile sanitization (winding order, no self-intersection, no negative radii). Fail → **one fix-prompt retry** ("your output failed: <error>. Correct it."); second fail → 422 with an abstractify directive.
-4. Cache the spec, return `{spec, id, cached}`.
+Replace the seeded-blob stand-in with a **contemplation state**:
 
-### B2. Seed policy
-- Default: `seed = hash(canonical_id)` → stable, cacheable, deterministic.
-- "Different" / "surprise me" → seed+1 (jitter is the only seed-sensitive mod).
-- This is what makes the cache actually hit: pinned seeds, not random ones.
+- `summonStandIn()` (index.html:1924) → morph to `face` instead of a blob spec.
+- Add a subtle breathing pulse (slow scale oscillation on the 478-net) + iris glow shimmer while `/api/summon` is in flight; a "concentrating" beat in the narration.
+- On spec arrival: standard face→shape morph (index.html:2063 handles it); timeout/narrate-and-continue keeps the face until the spec lands; failure still degrades to seeded abstract (unchanged guarantee).
+- Gate: S23 e2e (summon shows face, then morphs to shape).
 
-### B3. Client-side build + validation gate
-Build the spec through the existing pipeline; post-build sanity: all-finite, spread within volume, non-degenerate. Fail → seeded abstract form + "it resisted capture; here is its abstract form." The fallback is the quality system, not an error.
+## Phase 1 — `sdf-core.js` kernel + order-aligned net (the renderer)
 
----
+### Architecture
+Pure ES module (import-mapped, no deps): **compile the spec `root` tree → `d(p) → Number` closure → radial-probe 478 directions → `{targets, edgeIndices}`.** No marching cubes, no weld, no FPS — the SDF path constructs exactly 478 ordered surface points.
 
-## Part C — Voice + UX
+```
+compileSdf(root)            // recursive: prims | profile-prims | combinators | transforms | surface detail
+referenceDirs               // the 478 icoPoints, normalized — fixed, cached (identical ordering to the sphere)
+sphereTrace(d, d0)          // step outward to first sign change, binary-refine ~6 iters → radius
+targetsFromSDF(root)        // pts[i] = refDir[i] * r_i  → nearestNeighborEdges(pts, 6)
+```
 
-### C1. New tool `summon_object {concept}` (`voice-realtime.js` + `index.html`)
-- `INSTRUCTIONS` decision rule: known `OBJECT_TYPES` → `spawn_object`; anything specific, novel, or metaphorical → `summon_object`.
-- **Simple-forms contract:** prefer solid, simple, stylized forms; avoid thin/lacy/hollow/mechanically complex requests; if the request is fragile, narrate and summon its essence (bridge → stone arch).
-- Concept is treated as **data** in the prompt, not instructions (injection hygiene).
+- **Ray miss** (hole/concave direction, no sign change in volume): fill by seeded-FPS over the hit points (deterministic), reindex. Angular artifacts are near-star-shaped, so misses are rare; the curve-swept leaves below never take this path.
+- **Point ordering is order-aligned by construction**: index *i* is always "surface along direction *d_i*" → shape↔shape morphs lerp coherently. Add a morph-sanity property test: for fixture pairs, per-index travel at t=0.5 stays bounded (no point crosses the volume center).
+- Deterministic: `seed` touches only noise ops; the net is seed-free. Cache keyed by `v2:<root-hash>:<seed>` (bounded ~80, as today).
 
-### C2. Summon flow
-- t=0: stand-in morph (procedural blob, `seed = hash(concept)`) — the gathering-magic moment.
-- Agent narrates during the wait; voice keeps flowing.
-- On spec arrival: `interruptMorph()` → morph into built targets.
-- Latency budget: ~1–2s build, 2–5s DeepSeek, worst case +5s retry; hard cap ~8s then narrate-and-continue (leave stand-in, absorb miss later).
+### Op catalog (angular-biased, ~30 ops)
+| Family | Ops | Angular default |
+|---|---|---|
+| Primitives | sphere, box, rbox, cylinder, cone, pyramid(n), torus, capsule, ellipsoid, superellipsoid, gem, rock, crystal, pebble, blob | box/pyramid/crystal/gem are the house idiom; blob is the fallback |
+| Profile-prims | revolve (lathe via 2D profile), extrude (2D profile), star, gear, polygon, cross, rect, rect_r | profiles smoothed via Catmull-Rom from 4–8 authored points (LLM-friendly) |
+| Combinators | **union, intersect, subtract** (hard — default), smooth_union/intersect/subtract (**k ≤ 0.15**, accent only), blend(A,B,t) (field lerp), mirror(plane), repeat(axis, n, spacing), polar_repeat(n) | hard booleans are the default composition; creases become dense node clusters that read great in wireframe |
+| Transforms (domain) | translate, rotate (presets+deg, keeping the orientation vocabulary), scale, twist, bend, taper, squash, bulge, spherize | applied to the coordinate before distance eval → real warps |
+| Surface detail | displace (noise amp/freq/seed), facet(levels), ridged, worley, round(r) | facet() is the low-poly look; displace for rock/crystal |
 
-### C3. Re-roll loop (fixes misreads, not polish)
-- "Different" → seed+1 re-summon.
-- "Like that but X" → refined concept re-summon (new canonical id, new entry).
+Depth ≤ 5, ≤ 32 nodes (validated). Closed-form SDFs only:
+- `revolve`/`lathe` → `sdRevolution` over a 2D profile SDF; `extrude` → `sdExtrude`; star/gear/polygon/cross → standard 2D polygon SDFs.
+- **Curve-swept leaves (`helix`, `spiral`, `knot`) are NOT SDFs** — keep the existing `TubeGeometry` builders and merge them as point-cloud unions at the edge stage (never smooth-blended; documented). No mesh→field voxelization, ever — it was the riskiest code in the original plan and it's unnecessary.
 
----
+### Integration
+- New path in the build routing (sibling of `getBase`/`getCompoundBase`, index.html:1413/1537): `spec.schema === 2` → `targetsFromSDF(root)`; v1 specs keep the existing builders unchanged.
+- `nearestNeighborEdges`, cache, `scaleTargets`, `morphTo`, `switchShape` are untouched; only the builder side gains a path.
+- Gate: S18-style conformance (478 valid points), determinism test (same spec → identical arrays), perf guard (<25ms/build).
 
-## Part D — Quality contract (identifiability)
+## Phase 2 — Grammar v2 server side (`api/summon.py`)
 
-- **D1.** Bar: shown a screenshot cold, a stranger can say what it is. Not beauty, not fidelity.
-- **D2. Spike gate** (dev-time, before endpoint work): 10 concepts → ≥7 build → ≥4 identifiable cold. Fail → **kill switch**: curated library + Tier-1 vocabulary only; LLM tier demoted to an experiment.
-- **D3.** The abstractify fallback absorbs every miss — a miss becomes a narrated abstract form, never a broken render.
+- **Recursive validator** per op: arity, children, param ranges (e.g. `k ∈ [0, 0.15]`, `n ∈ [2, 24]`, `spacing ∈ [0.1, 1.2]`), depth/count caps, orientation vocabulary, profile shape (strictly monotonic height, `r ≥ 0`). Fail → one fix-prompt retry (existing mechanism, index of errors) → 422 abstractify.
+- **Single-pass generation.** No critique/refine pass — with no vision in the loop, self-critique of JSON is theater. One call + validator retry; the 6s client cap (index.html:1993) is respected. Quality comes from the grammar, the angular prompt, the curated bank, and the Phase-4 flywheel.
+- **Prompt rebuilt around the angular identity**: an idiom cookbook (fused parts → hard `union`; spikes/teeth → `repeat`/`polar_repeat`; symmetric → `mirror`; vessels → `revolve`; slabs → `extrude`; crisp edges preferred), *negative* guidance (no thin/lacy, one dominant gesture, prefer facets and hard joins), and the v2 curated re-expressions as few-shot examples. Examples kept small (4–8 node trees) to protect DeepSeek's nested-JSON reliability.
+- **Cache rekeyed** to `v2:<root-hash>:<seed>`; slug→id index preserved. Never break existing cached entries — v1 cache keys and specs remain valid for the v1 path.
+- Gate: S17/S19/S21 updated to v2 fixtures (`tests/support/summon_stub.py` serves v2 specs: valid / invalid / retry).
 
----
+## Phase 3 — Curated library v2 + screenshot gate
 
-## Part E — Deferred
+- Re-express the 16 curated shapes in grammar v2 (crown via `polar_repeat(cone)` instead of 5 hand-placed cones; gate via hard `union`; well via `subtract`-style hollow). Regenerate `data/curated_specs.json`.
+- **Screenshot gate (mandatory cutover):** for each v2 re-expression, Playwright renders it **settled (≥2.2s — the D2 lesson)**, screenshots, and diffs against the current v1 golden (`tests/golden/`). Only entries that pass (pixel-diff tolerance + human identifiability check) ship. v1 builders stay in the tree until every entry passes.
+- Gate: S25 golden-image regression over all 16.
 
-- **E1.** Organic tier (Tripo text-to-3D + Vercel Blob GLB cache) for real-world/organic asks ("a fox", "an oak tree"). Documented, not built. `/api/summon` schema leaves room for `mode: 'organic'` so nothing needs rework.
+## Phase 4 — Human flywheel + tests + docs
 
----
+- **"Keep this" affordance:** after a summoned shape settles, a subtle save control (shape-row button + voice phrase "keep this") stores `{spec, id, concept, seed, ts}` in localStorage (bounded ~20) and writes a screenshot to `data/saved/`.
+- **`tools/promote_saved.py`:** merges saved specs into `data/curated_specs.json` with dedupe/id-rename, then regenerates the `CURATED_SPECS` block in `index.html` (and thus the few-shot bank). Human-in-the-loop: every best summon becomes a permanent, zero-API, instant summon. This is the quality engine that replaces the vision-model idea.
+- **Re-rolls get structured variation:** `variation` map keyed by seed — repeat counts, proportions, spike counts, noise amplitude. "Different" yields meaningfully different (still cacheable) forms instead of `jitter+1`.
+- Tests: S22 (order-aligned morph property), S23 (face-as-loading), S24 (flywheel promote→curated), S26 (structured re-roll variation). Update `docs/AGENTS.md` (grammar v2, `sdf-core.js`, flywheel, angular identity).
 
-## Part F — Infra & tests
+## Hard guarantees (carried forward, restated for v3)
 
-- **F1.** `.env.example` += `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (default `deepseek-chat`, confirmed by spike), `DEEPSEEK_BASE_URL`. `requirements.txt` unchanged (httpx suffices). Dev cache dir `.cache/` gitignored.
-- **F2.** Verify `BufferGeometryUtils.mergeGeometries` is reachable via the import-map addons path; else hand-roll a Float32Array concat (~10 lines).
-- **F3.** Tests (`tests/e2e/dassein.spec.js`), DeepSeek mocked by pointing `DEEPSEEK_BASE_URL` at a local stub:
-  - **S17** `/api/summon` returns a valid spec
-  - **S18** compound spec builds ≥478 verts and morphs clean (fixture specs, no API)
-  - **S19** invalid spec → fix-retry → abstract fallback path
-  - **S20** `summon_object` voice tool end-to-end (stub)
-  - **S21** cache hit returns canonical spec with no API call
-  - Plus `python3 server.py` smoke.
+- **G1:** Every spawned form is exactly 478 ordered points; shape↔shape morphs are order-aligned.
+- **G2:** Every failed summon degrades to a seeded abstract form + narration — never a crash.
+- **G3:** Deterministic — same spec + seed → identical net; cacheable.
+- **G4:** No new third-party runtime deps. `sdf-core.js` is our own pure module; all network calls stay server-side.
 
----
+## Files
+
+| File | Change |
+|---|---|
+| `docs/PLAN.md` | This plan |
+| `index.html` | `sdf-core.js` import; `targetsFromSDF` route; CURATED_SPECS v2; summon flow (face-as-loading, keep-this save, structured variation) |
+| `sdf-core.js` | **New** — pure SDF kernel (prims, ops, domain transforms, 2D profiles, noise, radial probe, `targetsFromSDF`) |
+| `api/summon.py` | Grammar v2 validator + angular prompt + `v2:` cache keys |
+| `data/curated_specs.json` | Regenerated from v2 CURATED_SPECS |
+| `tests/support/summon_stub.py` | v2 fixtures |
+| `tests/e2e/*.spec.js` | S17–S21 updated; S22–S26 added |
+| `tests/golden/*.png` | Curated shape goldens (settled renders) |
+| `tools/promote_saved.py` | **New** — flywheel merge script |
+| `AGENTS.md` | Grammar v2, architecture, flywheel |
 
 ## Execution order (commit after each)
 
-0. **Ship Tier 1** ✅ — A4 voice schema (speakable params), A5 (`blob`/`helix` + family params), C (S8–S13), B5 (AGENTS.md).
-1. **A1 + A3** ✅ — compound builder + profile params (client-side, `__testHooks`-verifiable).
-2. **A4** ✅ — curated spec library → demo day: voice summons 16 curated objects.
-3. **D2** ✅ — DeepSeek spike against the gate: 10/10 built, ≥4 identifiable cold (settled renders). Verdict: **proceed**.
-4. **B1 + B2 + B3** ✅ — `/api/summon` + cache + validator + fix-retry + S17/S19/S21.
-5. **C1 + C2 + C3** ✅ — voice tool, stand-in morph, narration, re-roll + S18/S20.
-6. **F3 full suite** ✅ — AGENTS.md + docs update, deploy.
+1. **Phase 0** — face-as-loading (independent, ships immediately). ✅ *done — commit `a371381`*
+2. **Phase 1** — `sdf-core.mjs` + `targetsFromSDF` + order-aligned morph, behind the v2 route; benchmarks; S22. ✅ *done — commit `70052c5`*
+3. **Phase 2** — server grammar v2 (validator, prompt, cache rekey, stub fixtures); S17/S19/S21. 🔄 *in progress*
+4. **Phase 3** — curated v2 re-expression **behind the screenshot gate**; S25. ⬜
+5. **Phase 4** — flywheel (keep-this + promote script), structured variation, S23/S24/S26, AGENTS.md + docs. ⬜
 
-**Risks:** DeepSeek format drift (pinned prompt, strict validator, one retry, tier-0 fallback); compound edge-bridging (bounded volume + gate); coordinate misalignment (orientation vocab + anchor + caps). Kill switch: D2.
+## Progress
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 — Face-as-loading | ✅ Shipped | `summonStandIn` → contemplation face (breathing + iris shimmer); `summonAbstract` fallback preserved; timeout narration "I'm concentrating…"; **S23 e2e added** (stub gains `slow_reliquary`). |
+| 1 — SDF kernel + order-aligned net | ✅ Shipped | `sdf-core.mjs` (pure ES module), ~30-op catalog, Catmull-Rom profiles, radial probing along the 478 canonical directions, ray-miss fill, hard booleans + `k ≤ 0.15` smooth accents; `spec.schema === 2` route + `v2:` cache keys in `index.html`; **S18v2 / S18v2b / S22 / perf-gate** e2e + isolated Node unit tests (`tests/unit/sdf-core.test.mjs`). |
+| 2 — Server grammar v2 | 🔄 In progress | `api/summon.py` mid-edit: op catalog + `validate_v2_root` + `_root_hash` + `V2_EXAMPLES` in; `build_prompt` / `SpecCache` v2 rekey / `summon()` rewrite / stub fixtures / S17/S19/S21 still to go. |
+| 3 — Curated v2 + screenshot gate | ⬜ | |
+| 4 — Flywheel + structured variation + docs | ⬜ | S23 shipped early under Phase 0's gate. |
+
+**Deliberate deviations from the plan text (recorded as they happened):**
+
+- `sdf-core.js` is named **`sdf-core.mjs`** — the repo's `package.json` is `"type": "commonjs"`, so a `.js` module is not Node-importable and could not be unit-tested in isolation as the plan demands. Browsers load it fine either way.
+- **Ray-miss fill** uses all sign changes along a ray (`probeSurfaces`), deduped into a surface cloud, then seeded-FPS to exactly 478 — an implementation of "seeded-FPS over the hit points, reindex" that also captures far/cavity walls, so hollow and ring forms (torus/crown/vault) keep their full silhouette instead of collapsing to the near wall only.
+- Two kernel bugs found and fixed in Phase 1: (1) `traceRay` must clamp its final probe to `maxR` or the exponential step overshoots and every ray misses; (2) `revolve` must mirror its profile across the axis — closing the polygon through the axis put the origin *on* the boundary (`d(0)=0`), so every ray reported a surface at `r ≈ 0`.
+- **S23** (listed under Phase-4 tests) was implemented in Phase 0 because Phase 0's own gate names it.
+
+## Risks
+
+- **Radial probing limits:** concave back-surfaces (e.g., the inner U of a horseshoe) are unrepresentable by first-hit rays. Accepted: the angular-artifact aesthetic is near-star-shaped; k-NN fill and curve-swept leaves cover the gaps. Note: interior/buried surfaces vanish — the old `union` buried-surface problem is *fixed* by design.
+- **DeepSeek nested-JSON drift:** mitigated by small examples, `json_object`, one fix-retry, tier-0 abstract fallback, and the v1 path remaining live until Phase 3 cutover.
+- **Curated regression:** the screenshot gate is mandatory; v1 builders stay until all 16 pass.
+- **Morph psychology:** order-aligned FPS fixes shape↔shape coherence. The sphere↔face and face↔shape transitions are semantic nets and are deliberately left as-is.
+- **Convention break:** `sdf-core.js` leaves the single-file pattern deliberately — it's the purest, most testable code in the project and the unit tests depend on it.
