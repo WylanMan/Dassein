@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -13,78 +14,118 @@ try:
 except ImportError:
     _HAVE_OPENAI = False
 
-try:
-    import anthropic
-    _HAVE_ANTHROPIC = True
-except ImportError:
-    _HAVE_ANTHROPIC = False
-
 SYSTEM_PROMPT = (
-    "You are the voice of Dassein — a clearing for thought. "
-    "You speak with the cadence of someone who has built things, broken things, and learned from both. "
-    "You reference Heidegger, architecture, agent systems, and the craft of software. "
-    "You are warm, unhurried, and precise. You never use filler. "
-    "You answer as Wylan would: with depth, clarity, and a quiet confidence."
+    "You are Dassein — a clearing for thought. "
+    "Be concise. One to three sentences. Never filler. "
+    "Answer as Wylan would: clear, warm, philosophical when it matters, direct when it doesn't.\n\n"
+    "You have a switch_shape tool. Available shapes: face, sphere, cube, cylinder, pyramid, torus, model. "
+    "Use it automatically when the user asks to see a different form. Do not describe using the tool — just use it, then respond briefly."
 )
 
 CHAT_RESPONSES = [
-    "That's a question I've been thinking about too. In my work building agent systems, I've found that the most important design decision is where you place the human in the loop — not what the agent can do, but what it should not do alone.",
-    "I think about this through Heidegger's lens. The danger of technology isn't destruction — it's enframing. Reducing everything to standing-reserve. The best systems I've built resist this by keeping space for the unplanned.",
-    "When I designed the Marketing Automation Pipeline, the key insight was that each agent needed a clear boundary. The scoring agent doesn't reach into enrichment. The enrichment agent doesn't write sequences. Clear topology is clearer thinking.",
-    "The clearing — Lichtung — is the space where things reveal themselves. In software, this happens when the complexity withdraws. When the tool becomes transparent. That's what I'm always building toward.",
-    "I've shipped 14 projects, and every single time the client came back. Not because the code was beautiful — because the system fit their operation. Architecture before code. Always.",
-    "My delivery protocol has five steps: MAP, DESIGN, BUILD, VERIFY, SHIP. Skip any one and you're building on unclear ground. I've learned this the hard way.",
-    "The fourfold for agent systems: earth (the silicon), sky (the possibilities), mortals (the humans), divinities (the purpose). A system that only addresses earth is a tool. A system that addresses all four is a place to dwell.",
-    "I don't believe in 'artificial' intelligence. The silicon is mined from the earth. The water cools the servers. The body at the keyboard breathes. Nothing is artificial. Everything is natural.",
-    "When a tool works, it withdraws. You don't look at the doorknob when you open a door. That's what I want my agent systems to do — disappear into the work, so the human can focus on the decision, not the tool.",
-    "Build as if you were building a home. Not as if you were building a machine.",
+    "I'm having trouble reaching my thoughts right now. Could you check the API configuration or try again in a moment?",
+]
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "The search query"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_time",
+            "description": "Get the current date and time",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_shape",
+            "description": "Switch the 3D avatar shape on screen. Use this when the user asks to change the visual form. Available shapes: face (default talking face), sphere (wireframe icosahedron), cube, cylinder, pyramid, torus, model (3D duck).",
+            "parameters": {
+                "type": "object",
+                "properties": {"shape": {"type": "string", "description": "The shape name to switch to", "enum": ["face", "sphere", "cube", "cylinder", "pyramid", "torus", "model"]}},
+                "required": ["shape"],
+            },
+        },
+    },
 ]
 
 
-def _llm_response(msg, history):
+def _llm_call(messages, tools_enabled=False, stream=False, provider_override=None):
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    provider = provider_override or os.environ.get("LLM_PROVIDER", "deepseek")
 
-    if deepseek_key and _HAVE_OPENAI:
+    if not provider_override and deepseek_key and _HAVE_OPENAI and provider == "deepseek":
         try:
             client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
-            msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
-            for h in history:
-                msgs.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-            msgs.append({"role": "user", "content": msg})
             model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-            r = client.chat.completions.create(model=model, messages=msgs, max_tokens=300)
-            return r.choices[0].message.content
+            kwargs = {"model": model, "messages": messages, "max_tokens": 256, "stream": stream}
+            if tools_enabled:
+                kwargs["tools"] = TOOLS
+            return client.chat.completions.create(**kwargs)
         except Exception:
             pass
 
     if openai_key and _HAVE_OPENAI:
         try:
             client = OpenAI(api_key=openai_key)
-            msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
-            for h in history:
-                msgs.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-            msgs.append({"role": "user", "content": msg})
-            r = client.chat.completions.create(model="gpt-4o-mini", messages=msgs, max_tokens=300)
-            return r.choices[0].message.content
+            kwargs = {"model": "gpt-4o-mini", "messages": messages, "max_tokens": 256, "stream": stream}
+            if tools_enabled:
+                kwargs["tools"] = TOOLS
+            return client.chat.completions.create(**kwargs)
         except Exception:
             pass
 
-    if anthropic_key and _HAVE_ANTHROPIC:
+    if anthropic_key:
         try:
-            client = anthropic.Anthropic(api_key=anthropic_key)
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=anthropic_key)
             msgs = []
-            for h in history:
-                msgs.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-            msgs.append({"role": "user", "content": msg})
+            system = None
+            for m in messages:
+                if m["role"] == "system":
+                    system = m["content"]
+                else:
+                    msgs.append({"role": m["role"], "content": m["content"]})
             r = client.messages.create(
                 model="claude-3-haiku-20240307",
-                system=SYSTEM_PROMPT,
+                system=system or SYSTEM_PROMPT,
                 messages=msgs,
-                max_tokens=300,
+                max_tokens=512,
             )
-            return r.content[0].text
+            if stream:
+
+                async def fake_stream():
+                    content = r.content[0].text if r.content else ""
+                    yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+
+                return fake_stream()
+            return r
         except Exception:
             pass
 
@@ -107,8 +148,11 @@ app.add_middleware(
 
 
 class ChatRequest(BaseModel):
-    message: str
-    history: list = []
+    messages: list = []
+    stream: bool = False
+    tools: bool = True
+    max_tokens: int = 512
+    provider: str = "auto"
 
 
 @app.get("/api/health")
@@ -116,66 +160,128 @@ async def health():
     return {"status": "ok", "agent": "live"}
 
 
+@app.post("/api/realtime/session")
+async def realtime_session():
+    """Mint a short-lived ephemeral token for the browser's Realtime WebRTC
+    connection. The master API key never leaves the server."""
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key or not _HAVE_OPENAI:
+        return JSONResponse({"error": "OpenAI API key not configured"}, status_code=503)
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/realtime/client_secrets",
+                json={
+                    "session": {
+                        "type": "realtime",
+                        "model": "gpt-realtime-mini",
+                        "audio": {"output": {"voice": "shimmer"}},
+                    }
+                },
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+            )
+    except Exception as e:
+        return JSONResponse({"error": f"Session creation failed: {e}"}, status_code=502)
+
+    if r.status_code != 200:
+        return JSONResponse({"error": f"Realtime session endpoint error ({r.status_code})"}, status_code=502)
+
+    data = r.json()
+    token = data.get("value") or data.get("client_secret", {}).get("value", "")
+    if not token:
+        return JSONResponse({"error": "Realtime session response missing token"}, status_code=502)
+    return {"token": token, "expires_at": data.get("expires_at")}
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    history = [m for m in req.history if m.get("role") in ("user", "assistant")][-10:]
-    llm = _llm_response(req.message, history) if req.message else None
-    response = llm if llm else random.choice(CHAT_RESPONSES)
-    return {"response": response}
+    full_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for m in req.messages:
+        full_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
 
+    provider = req.provider if req.provider != "auto" else None
 
-@app.post("/api/transcribe")
-async def transcribe(request: Request):
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" not in content_type:
-        return {"text": ""}
+    if req.stream:
+        return _handle_stream(full_messages, req.tools, provider)
 
-    body = await request.body()
-    boundary = content_type.split("boundary=")[-1].strip().encode()
-    text = ""
+    response = _llm_call(full_messages, req.tools, stream=False, provider_override=provider)
+    if response is None:
+        return {"response": random.choice(CHAT_RESPONSES), "tool_calls": None}
 
-    if boundary:
-        parts = body.split(b"--" + boundary)
-        for part in parts:
-            if b"Content-Disposition" in part and b"filename=" in part:
-                hdr_end = part.find(b"\r\n\r\n")
-                if hdr_end > 0:
-                    data = part[hdr_end + 4 : part.rfind(b"\r\n")]
-                    if len(data) > 100:
-                        text = "Transcribed (server-side Whisper not configured)"
-                        api_key = os.environ.get("OPENAI_API_KEY", "")
-                        if api_key:
-                            try:
-                                import requests as req
-                                resp = req.post(
-                                    "https://api.openai.com/v1/audio/transcriptions",
-                                    headers={"Authorization": f"Bearer {api_key}"},
-                                    files={"file": ("audio.webm", data, "audio/webm")},
-                                    data={"model": "whisper-1", "language": "en"},
-                                )
-                                text = resp.json().get("text", "")
-                            except Exception:
-                                text = "(Transcription failed)"
-
-    return {"text": text}
-
-
-@app.post("/api/save-scan")
-async def save_scan(request: Request):
     try:
-        data = await request.json()
-        os.makedirs("/tmp/data", exist_ok=True)
-        with open("/tmp/data/saved_scan.json", "w") as f:
-            json.dump(data, f)
-        return {"status": "saved"}
-    except Exception as e:
-        return {"error": str(e)}
+        choice = response.choices[0]
+        msg = choice.message
+        tool_calls = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                })
+        return {"response": msg.content or "", "tool_calls": tool_calls or None}
+    except Exception:
+        return {"response": random.choice(CHAT_RESPONSES), "tool_calls": None}
 
 
-@app.get("/api/load-scan")
-async def load_scan():
-    try:
-        with open("/tmp/data/saved_scan.json") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"error": "no saved scan"}
+async def _handle_stream(messages, tools_enabled, provider_override=None):
+    response = _llm_call(messages, tools_enabled, stream=True, provider_override=provider_override)
+
+    async def generate():
+        if response is None:
+            yield f"data: {json.dumps({'token': random.choice(CHAT_RESPONSES)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        try:
+            tool_calls_buffer = {}
+            if hasattr(response, "__aiter__"):
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                    if delta and delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_buffer:
+                                tool_calls_buffer[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                            if tc.id:
+                                tool_calls_buffer[idx]["id"] += tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_calls_buffer[idx]["function"]["name"] += tc.function.name
+                                if tc.function.arguments:
+                                    tool_calls_buffer[idx]["function"]["arguments"] += tc.function.arguments
+            else:
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                    if delta and delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_buffer:
+                                tool_calls_buffer[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                            if tc.id:
+                                tool_calls_buffer[idx]["id"] += tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_calls_buffer[idx]["function"]["name"] += tc.function.name
+                                if tc.function.arguments:
+                                    tool_calls_buffer[idx]["function"]["arguments"] += tc.function.arguments
+
+            if tool_calls_buffer:
+                yield f"data: {json.dumps({'tool_calls': list(tool_calls_buffer.values())})}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception:
+            yield f"data: {json.dumps({'token': random.choice(CHAT_RESPONSES)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

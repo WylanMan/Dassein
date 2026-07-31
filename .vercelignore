@@ -10,7 +10,6 @@ playwright.config.js
 package.json
 package-lock.json
 server.py
-PLAN.md
-MISSING_FEATURES.md
+docs/
 AGENTS.md
 .env.example

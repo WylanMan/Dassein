@@ -82,45 +82,8 @@
     .dot { width: 7px; height: 7px; border-radius: 50%; background: #00d4ff; box-shadow: 0 0 12px #00d4ff; animation: pulse 2.4s infinite; }
     @keyframes pulse { 50% { opacity: .35; } }
 
-    .convo {
-      min-height: 20px; max-width: 480px; text-align: center;
-      font-size: 14px; color: #9a97a3; line-height: 1.5;
-      max-height: 36vh; overflow-y: auto;
-      display: flex; flex-direction: column; gap: 8px;
-      padding: 0 16px;
-    }
-    .msg-line {
-      max-width: 85%; padding: 8px 14px; border-radius: 16px;
-      font-size: 13px; line-height: 1.45; word-break: break-word;
-    }
-    .msg-line.user {
-      align-self: flex-end;
-      background: rgba(0, 212, 255, 0.08); color: #b9b6c2;
-      border: 1px solid rgba(0, 212, 255, 0.12);
-    }
-    .msg-line.assistant {
-      align-self: flex-start;
-      background: rgba(255, 255, 255, 0.03); color: #b9b6c2;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-    }
-    .msg-line.streaming::after {
-      content: '|'; animation: blink-cursor 0.7s infinite;
-      color: #00d4ff; font-weight: bold;
-    }
-    @keyframes blink-cursor {
-      50% { opacity: 0; }
-    }
-
     .bar { display: flex; gap: 10px; align-items: center; }
-    .bar input[type=text] {
-      background: #111118; color: #b9b6c2;
-      border: 1px solid rgba(0, 212, 255, 0.12);
-      padding: 10px 16px; border-radius: 999px;
-      font: inherit; font-size: 14px;
-      width: min(46vw, 320px); outline: none;
-      transition: border-color 0.25s;
-    }
-    .bar input[type=text]:focus { border-color: rgba(0, 212, 255, 0.35); }
+
     button {
       background: #15151d; color: #aab4c0;
       border: 1px solid rgba(0, 212, 255, 0.12);
@@ -130,7 +93,6 @@
     }
     button:hover { background: #1c1c28; border-color: rgba(0, 212, 255, 0.35); color: #b9b6c2; }
     #micBtn.live { background: #201518; border-color: #ff4466; color: #ffb3ba; }
-    #micBtn.cont-active { background: #142218; border-color: #44ff88; color: #b3ffba; }
 
     .shape-row {
       display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
@@ -171,9 +133,6 @@
       <span class="dot"></span>
       <span>the questioner</span>
     </div>
-    <div class="convo" id="convo">
-      Ask anything. I answer in Wylan's words.
-    </div>
     <div class="shape-row" id="shapeRow">
       <span class="shape-pill active" data-shape="face">face</span>
       <span class="shape-pill" data-shape="sphere">sphere</span>
@@ -181,11 +140,10 @@
       <span class="shape-pill" data-shape="cylinder">cylinder</span>
       <span class="shape-pill" data-shape="pyramid">pyramid</span>
       <span class="shape-pill" data-shape="torus">torus</span>
+      <span class="shape-pill" data-shape="model">model</span>
     </div>
     <div class="bar">
-      <input id="chatInput" type="text" placeholder="Ask me something..." autocomplete="off"/>
-      <button id="sendBtn">&rarr;</button>
-      <button id="micBtn">mic</button>
+      <button id="micBtn">start voice</button>
     </div>
   </div>
 
@@ -193,7 +151,8 @@
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/"
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/",
+        "delaunator": "https://cdn.jsdelivr.net/npm/delaunator@4.0.1/index.js"
       }
     }
   </script>
@@ -202,6 +161,9 @@
     import * as THREE from 'three';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { VoiceRealtime } from './voice-realtime.js';
+    import { VoiceConversation } from './voice-conversation.js';
+
 
     const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -500,6 +462,25 @@
     const icoGeo = new THREE.BufferGeometry();
     icoGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
+    // NN edges with configurable k — more connectivity for non-spherical shapes
+    function nnEdgesK(points, k) {
+      const edges = []; const used = new Set();
+      for (let i = 0; i < points.length; i++) {
+        const ds = [];
+        for (let j = 0; j < points.length; j++) {
+          if (i === j) continue;
+          const dx = points[i].x - points[j].x, dy = points[i].y - points[j].y, dz = points[i].z - points[j].z;
+          ds.push({ idx: j, d: dx * dx + dy * dy + dz * dz });
+        }
+        ds.sort((a, b) => a.d - b.d);
+        for (let kk = 0; kk < Math.min(k, ds.length); kk++) {
+          const key = Math.min(i, ds[kk].idx) + '-' + Math.max(i, ds[kk].idx);
+          if (!used.has(key)) { used.add(key); edges.push([i, ds[kk].idx]); }
+        }
+      }
+      return edges;
+    }
+
     // Point cloud
     const icoDotMat = new THREE.PointsMaterial({
       size: 0.035, color: 0x00d4ff,
@@ -763,7 +744,6 @@
 
       gsap.to('#overlay', { opacity: 0, duration: 0.5 });
 
-
       // Reset accumulated rotation so face aligns with world
       icoGroup.rotation.set(0, 0, 0);
       ScrollController.reset();
@@ -951,36 +931,123 @@
     });
 
     // --- Shape morphing engine ---
-    const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus'];
+    const SHAPE_NAMES = ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus', 'model'];
+
+    function weldVertices(positions, threshold) {
+      const n = positions.length / 3;
+      const unique = [];
+      const indices = new Array(n);
+      for (let i = 0; i < n; i++) {
+        let found = -1;
+        const ix = positions[i * 3], iy = positions[i * 3 + 1], iz = positions[i * 3 + 2];
+        for (let j = 0; j < unique.length / 3; j++) {
+          const dx = ix - unique[j * 3], dy = iy - unique[j * 3 + 1], dz = iz - unique[j * 3 + 2];
+          if (dx * dx + dy * dy + dz * dz < threshold * threshold) { found = j; break; }
+        }
+        if (found >= 0) indices[i] = found;
+        else { indices[i] = unique.length / 3; unique.push(ix, iy, iz); }
+      }
+      return { vertices: new Float32Array(unique), indices };
+    }
+
+    function farthestPointSampling(vertices, targetCount, seed) {
+      const n = vertices.length / 3;
+      const selected = new Array(targetCount);
+      const distances = new Float32Array(n).fill(Infinity);
+      selected[0] = seed % n;
+      for (let i = 1; i < targetCount; i++) {
+        const lastIdx = selected[i - 1];
+        const lx = vertices[lastIdx * 3], ly = vertices[lastIdx * 3 + 1], lz = vertices[lastIdx * 3 + 2];
+        let maxDist = -1, maxIdx = -1;
+        for (let j = 0; j < n; j++) {
+          const dx = vertices[j * 3] - lx, dy = vertices[j * 3 + 1] - ly, dz = vertices[j * 3 + 2] - lz;
+          const d = dx * dx + dy * dy + dz * dz;
+          if (d < distances[j]) distances[j] = d;
+          if (distances[j] > maxDist) { maxDist = distances[j]; maxIdx = j; }
+        }
+        selected[i] = maxIdx;
+      }
+      return selected;
+    }
+
+    const GLB_MODEL_URL = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Duck/glTF-Binary/Duck.glb';
+
+    async function loadGLBModel(url) {
+      const loader = new GLTFLoader();
+      const gltf = await new Promise((resolve, reject) => {
+        loader.load(url, resolve, undefined, reject);
+      });
+      const allVerts = [];
+      gltf.scene.traverse((child) => {
+        if (child.isMesh) {
+          const pos = child.geometry.getAttribute('position');
+          if (pos) {
+            for (let i = 0; i < pos.count; i++) {
+              allVerts.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+            }
+          }
+        }
+      });
+      if (allVerts.length === 0) return null;
+      let cx = 0, cy = 0, cz = 0;
+      for (let i = 0; i < allVerts.length; i += 3) { cx += allVerts[i]; cy += allVerts[i+1]; cz += allVerts[i+2]; }
+      const n = allVerts.length / 3;
+      cx /= n; cy /= n; cz /= n;
+      let maxDist = 0;
+      for (let i = 0; i < allVerts.length; i += 3) {
+        const dx = allVerts[i] - cx, dy = allVerts[i+1] - cy, dz = allVerts[i+2] - cz;
+        allVerts[i] = dx; allVerts[i+1] = dy; allVerts[i+2] = dz;
+        maxDist = Math.max(maxDist, Math.sqrt(dx*dx + dy*dy + dz*dz));
+      }
+      const scale = 0.5 / maxDist;
+      for (let i = 0; i < allVerts.length; i++) allVerts[i] *= scale;
+      const rawVerts = new Float32Array(allVerts);
+      const welded = weldVertices(rawVerts, 0.001);
+      const selected = farthestPointSampling(welded.vertices, NUM, 0);
+      const targets = new Array(NUM);
+      const v = welded.vertices;
+      for (let i = 0; i < NUM; i++) {
+        const idx = selected[i] * 3;
+        targets[i] = { x: v[idx], y: v[idx + 1], z: v[idx + 2] };
+      }
+      shapeTargets = targets;
+      const fpsEdges = nearestNeighborEdges(targets, 6);
+      shapeTargetEdgeIndices = [];
+      for (const [a, b] of fpsEdges) shapeTargetEdgeIndices.push(a, b);
+      return true;
+    }
 
     async function loadShapeGLB(name) {
-      const loader = new GLTFLoader();
-      const gltf = await loader.loadAsync(`/data/shapes/${name}.glb`);
-      const mesh = gltf.scene.children[0];
-      const geo = mesh.geometry;
-      const rawVerts = geo.attributes.position.array;
-      const rawCount = rawVerts.length / 3;
+      if (name === 'model') return loadGLBModel(GLB_MODEL_URL);
+      const D = { cube: 16, cylinder: 32, pyramid: 32, torus: 32 };
+      const H = { cylinder: 16, pyramid: 16 };
+      let geo;
+      switch (name) {
+        case 'cube':     geo = new THREE.BoxGeometry(0.5, 0.5, 0.5, D.cube, D.cube, D.cube); break;
+        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1.0, D.cylinder, H.cylinder); break;
+        case 'pyramid':  geo = new THREE.ConeGeometry(0.5, 0.85, D.pyramid, H.pyramid); break;
+        case 'torus':    geo = new THREE.TorusGeometry(0.45, 0.18, D.torus, D.torus); break;
+        default: return null;
+      }
+      geo.computeVertexNormals();
 
-      // Sample shape surface at each Fibonacci direction → 478 morph targets
+      const posAttr = geo.getAttribute('position');
+      const rawVerts = new Float32Array(posAttr.array);
+      const welded = weldVertices(rawVerts, 0.001);
+      const selected = farthestPointSampling(welded.vertices, NUM, 0);
       const targets = new Array(NUM);
+      const v = welded.vertices;
       for (let i = 0; i < NUM; i++) {
-        let bestD = Infinity, bestJ = 0;
-        const ip = icoPoints[i];
-        for (let j = 0; j < rawCount; j++) {
-          const dx = ip.x - rawVerts[j * 3];
-          const dy = ip.y - rawVerts[j * 3 + 1];
-          const dz = ip.z - rawVerts[j * 3 + 2];
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 < bestD) { bestD = d2; bestJ = j; }
-        }
-        targets[i] = { x: rawVerts[bestJ*3], y: rawVerts[bestJ*3+1], z: rawVerts[bestJ*3+2] };
+        const idx = selected[i] * 3;
+        targets[i] = { x: v[idx], y: v[idx + 1], z: v[idx + 2] };
       }
       shapeTargets = targets;
 
-      // Compute nearest-neighbor edges on the sampled 478-point cloud
-      const shapeEdges = nearestNeighborEdges(targets, 6);
+      const fpsEdges = nearestNeighborEdges(targets, 6);
       shapeTargetEdgeIndices = [];
-      for (const [a, b] of shapeEdges) shapeTargetEdgeIndices.push(a, b);
+      for (const [a, b] of fpsEdges) shapeTargetEdgeIndices.push(a, b);
+
+      geo.dispose();
       return true;
     }
 
@@ -998,7 +1065,7 @@
       // Update pill active states
       document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === name));
 
-      // Load GLB for solid shapes (not sphere which uses icoPoints, not face which uses faceLMs)
+      // Load GLB for all non-face shapes (solid mesh replacement)
       if (name !== 'face' && name !== 'sphere' && name !== prevShape) {
         try { if (!await loadShapeGLB(name)) { currentShape = prevShape; return; } } catch (e) { console.warn('Shape load failed:', e); currentShape = prevShape; return; }
       }
@@ -1047,8 +1114,8 @@
       const tFgOp = isFace ? 0.18 : 0;
       const tFmOp = isFace ? 0.55 : 0;
       const tKnOp = isFace ? 0.25 : 0;
-      const tIeOp = isFace ? 0.35 : (isSphere ? 0.28 : 0.22);
-      const tIgOp = isFace ? 0.12 : (isSphere ? 0.10 : 0.08);
+      const tIeOp = isSphere ? 0.28 : 0.35;
+      const tIgOp = isSphere ? 0.10 : 0.12;
 
       let indicesSwapped = false;
 
@@ -1145,6 +1212,7 @@
       // --- Agent mode animation ---
       if (state === 'agent' && window.__scene?.behavior && workingBuffer && baseLMs) {
         const isFaceMode = currentShape === 'face' || currentShape === 'sphere';
+        const isSolidShape = currentShape === 'cube' || currentShape === 'cylinder' || currentShape === 'pyramid' || currentShape === 'torus' || currentShape === 'model';
         const b = window.__scene.behavior.update(dt);
         const t = time / 1000;
 
@@ -1158,7 +1226,12 @@
 
           // Priority: VisemeEngine > EmotionState > idle behavior
           if (VisemeEngine.talking) {
-          VisemeEngine.update(dt);
+          if (VisemeEngine.audioDriven) {
+            VisemeEngine.audioLevel = voiceRealtime.getAudioLevel();
+            VisemeEngine.updateAudio(dt);
+          } else {
+            VisemeEngine.update(dt);
+          }
         } else if (EmotionState.target !== 'neutral' && EmotionState.blend < 1) {
           EmotionState.update(dt);
         } else {
@@ -1205,27 +1278,33 @@
         const scrolling = ScrollController.isFaceScrolling();
         const atRest = ScrollController.isFaceAtRest();
 
-        const headMotion = HeadMotion.update(dt);
-        if (headMotion && icoGroup) {
-          const headYaw = headMotion.yaw * 0.5;
-          icoGroup.rotation.y = scrollY + headYaw;
-          icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
-          icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
-        } else if (icoGroup && state === 'agent') {
-          if (atRest) {
-            const swayAmp = 0.6;
-            const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
-            icoGroup.rotation.y = sway;
-            icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
-          } else if (scrolling) {
-            icoGroup.rotation.y = scrollY;
-            icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
-          } else {
-            icoGroup.rotation.y = scrollY;
-            icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+        if (isSolidShape) {
+          // Solid shapes: free inertial spin (no clamp), no autonomous motion
+          icoGroup.rotation.y += ScrollController.spinVelocity * dt * 60;
+          icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+        } else {
+          const headMotion = HeadMotion.update(dt);
+          if (headMotion && icoGroup) {
+            const headYaw = headMotion.yaw * 0.5;
+            icoGroup.rotation.y = scrollY + headYaw;
+            icoGroup.rotation.x += (headMotion.pitch * 0.3 - icoGroup.rotation.x) * Math.min(1, dt * 2);
+            icoGroup.rotation.z += (headMotion.roll * 0.3 - icoGroup.rotation.z) * Math.min(1, dt * 2);
+          } else if (icoGroup && state === 'agent') {
+            if (atRest) {
+              const swayAmp = 0.6;
+              const sway = (Math.sin(t * 0.4) * 0.05 + Math.sin(t * 0.23) * 0.03) * swayAmp;
+              icoGroup.rotation.y = sway;
+              icoGroup.rotation.x += (Math.sin(t * 0.31) * 0.02 * swayAmp - icoGroup.rotation.x) * Math.min(1, dt * 2);
+            } else if (scrolling) {
+              icoGroup.rotation.y = scrollY;
+              icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+            } else {
+              icoGroup.rotation.y = scrollY;
+              icoGroup.rotation.x += (0 - icoGroup.rotation.x) * Math.min(1, dt * 1.5);
+            }
           }
         }
-        // Vertical breathing bob
+        // Vertical breathing bob (all shapes)
         if (icoGroup) icoGroup.position.y = 0.01 * Math.sin(t * 1.3 + 0.6) * 0.6;
       }
       renderer.render(scene, camera);
@@ -1388,6 +1467,8 @@
       planCursor: 0,
       elapsed: 0,
       talking: false,
+      audioDriven: false,
+      audioLevel: 0,
       smoothedJaw: 0, smoothedSmile: 0, smoothedPucker: 0, smoothedFunnel: 0, smoothedClose: 0,
       smoothedIntensity: 0,
 
@@ -1433,17 +1514,6 @@
       update(dt) {
         if (!this.talking || dt <= 0 || isNaN(dt)) return;
 
-        // Blend live audio intensity into viseme — compensates for fixed-plan drift
-        let audioBoost = 0;
-        if (analyser) {
-          const freqData = new Uint8Array(analyser.frequencyBinCount);
-          analyser.getByteFrequencyData(freqData);
-          let sum = 0;
-          for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-          const avg = sum / freqData.length / 255;
-          audioBoost = avg > 0.02 ? avg * 1.5 : 0;
-        }
-
         this.elapsed += dt;
         while (this.planCursor < this.plan.length && this.elapsed >= this.plan[this.planCursor].startTime + this.plan[this.planCursor].duration) {
           this.planCursor++;
@@ -1474,7 +1544,7 @@
           else if (nv === 'O') { jaw = jaw * (1-blend) + 0.3 * blend; funnel = funnel * (1-blend) + 0.2 * blend; }
         }
 
-        jaw = Math.min(0.5, jaw * intensity + audioBoost * 0.3);
+        jaw = Math.min(0.5, jaw * intensity);
         smileVal = Math.min(0.5, smileVal * intensity);
         pucker = Math.min(0.4, pucker * intensity);
         funnel = Math.min(0.4, funnel * intensity);
@@ -1497,7 +1567,40 @@
         );
       },
 
-      stop() { this.talking = false; this.plan = []; this.planCursor = 0; this.elapsed = 0; },
+      // Audio-driven mode: mouth follows the real amplitude envelope of the
+      // model's output audio (set via this.audioLevel each frame). Jaw opens
+      // with loudness; slow oscillators fake viseme variety on top.
+      updateAudio(dt) {
+        if (!this.talking || dt <= 0 || isNaN(dt)) return;
+        this.elapsed += dt;
+        const lvl = Math.min(1, this.audioLevel * 2.2);
+        const t = this.elapsed;
+
+        const jaw = Math.min(0.5, lvl * (0.55 + 0.25 * Math.sin(t * 9.1)));
+        const smileVal = Math.min(0.5, Math.max(0, lvl * 0.18 * (1 + Math.sin(t * 6.7 + 1.3))));
+        const funnel = Math.min(0.4, Math.max(0, lvl * 0.3 * Math.sin(t * 5.3 + 0.6)));
+        const pucker = Math.min(0.4, Math.max(0, lvl * 0.22 * Math.sin(t * 4.1 + 2.4)));
+        const close = lvl < 0.06 ? 0.3 : 0;
+        const intensity = Math.min(1, 0.3 + lvl);
+
+        const spd = Math.min(1, 1 - Math.exp(-14 * dt));
+        this.smoothedJaw += (jaw - this.smoothedJaw) * spd;
+        this.smoothedSmile += (smileVal - this.smoothedSmile) * spd;
+        this.smoothedPucker += (pucker - this.smoothedPucker) * spd;
+        this.smoothedFunnel += (funnel - this.smoothedFunnel) * spd;
+        this.smoothedClose += (close - this.smoothedClose) * spd;
+        this.smoothedIntensity += (intensity - this.smoothedIntensity) * Math.min(1, 1 - Math.exp(-15 * dt));
+
+        applyVisemeBlendshapesToLandmarks(
+          this.smoothedJaw * this.smoothedIntensity,
+          this.smoothedSmile * this.smoothedIntensity,
+          this.smoothedPucker * this.smoothedIntensity,
+          this.smoothedFunnel * this.smoothedIntensity,
+          this.smoothedClose * this.smoothedIntensity
+        );
+      },
+
+      stop() { this.talking = false; this.audioDriven = false; this.plan = []; this.planCursor = 0; this.elapsed = 0; },
     };
 
     // --- Wave 2: EmotionState ---
@@ -1587,275 +1690,44 @@
       };
     }
 
-    // --- TTS (Wave 4) ---
-    let ttsVoices = [];
-    let ttsPrimed = false;
-
-    function unlockSpeech() {
-      if (ttsPrimed) return;
-      if ('speechSynthesis' in window) {
-        const u = new SpeechSynthesisUtterance('');
-        u.volume = 0; speechSynthesis.speak(u); ttsPrimed = true;
-      }
-    }
-
-    function pickVoice(prefix) {
-      if (!ttsVoices.length && 'speechSynthesis' in window) ttsVoices = speechSynthesis.getVoices();
-      return ttsVoices.find(v => v.lang.startsWith(prefix)) || null;
-    }
-
-    function say(text) {
-      return new Promise((resolve) => {
-        if (!('speechSynthesis' in window)) { resolve(); return; }
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en-US';
-        u.voice = pickVoice(u.lang.substring(0, 2));
-        u.rate = 1.02;
-        let resolved = false;
-        u.onstart = () => { VisemeEngine.buildSyllablePlan(text); VisemeEngine.talking = true; };
-        u.onend = () => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } };
-        u.onerror = () => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } };
-        speechSynthesis.speak(u);
-        setTimeout(() => { if (!resolved) { resolved = true; VisemeEngine.talking = false; resolve(); } }, 600 + text.length * 90);
-      });
-    }
-
-    // --- Chat history (Wave 4) — persisted to localStorage ---
-    let chatHistory = JSON.parse(localStorage.getItem('dassein_history') || '[]');
-    let abortController = null;
-
-    function addMessage(role, text) {
-      const div = document.createElement('div');
-      div.className = 'msg-line ' + role;
-      div.textContent = text;
-      convoEl.appendChild(div);
-      convoEl.scrollTop = convoEl.scrollHeight;
-    }
-
-    // --- Wave 4: ask function (streaming chat → viseme → speak) ---
-    async function ask(text) {
-      if (!text.trim()) return;
-      speechSynthesis.cancel();
-      VisemeEngine.talking = false;
-      if (abortController) abortController.abort();
-      abortController = new AbortController();
-
-      unlockSpeech();
-      addMessage('user', text);
-
-      const replyDiv = document.createElement('div');
-      replyDiv.className = 'msg-line assistant streaming';
-      convoEl.appendChild(replyDiv);
-      let fullReply = '';
-
-      try {
-        const r = await fetch('/api/chat/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, history: chatHistory.slice(-10) }),
-          signal: abortController.signal,
-        });
-
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let startedSpeaking = false;
-
-        outerLoop:
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6);
-            if (data === '[DONE]') { fullReply += ''; break outerLoop; }
-            try {
-              const { token } = JSON.parse(data);
-              fullReply += token;
-              replyDiv.textContent = fullReply;
-              convoEl.scrollTop = convoEl.scrollHeight;
-
-              if (!startedSpeaking && fullReply.length > 20) {
-                startedSpeaking = true;
-                VisemeEngine.buildSyllablePlan(fullReply);
-                VisemeEngine.talking = true;
-                say(fullReply).then(() => { replyDiv.classList.remove('streaming'); });
-              }
-            } catch {}
+    // --- Voice agent (speech-to-speech via OpenAI Realtime over WebRTC) ---
+    const voiceRealtime = new VoiceRealtime({
+      voice: 'shimmer',
+      tools: {
+        switch_shape: async ({ shape }) => {
+          if (!shape) return 'No shape specified.';
+          try {
+            await switchShape(shape);
+            return `Switched to ${shape} shape.`;
+          } catch (e) {
+            return `Failed to switch shape: ${e.message}`;
           }
+        },
+      },
+      onError: (err) => console.error('[Realtime]', err),
+    });
+
+    const conversation = new VoiceConversation({
+      realtime: voiceRealtime,
+      onStateChange: (state, visual) => {
+        const dot = document.querySelector('.dot');
+        if (dot) {
+          dot.style.background = visual.color;
+          dot.style.boxShadow = visual.pulse ? `0 0 12px ${visual.color}` : 'none';
+          dot.style.animation = visual.pulse ? 'pulse 1.2s infinite' : 'none';
         }
+      },
+      onAudioStart: () => {
+        VisemeEngine.audioDriven = true;
+        VisemeEngine.talking = true;
+      },
+      onAudioEnd: () => {
+        VisemeEngine.talking = false;
+      },
+      onError: (err) => console.error('[Conversation]', err),
+    });
 
-        if (!startedSpeaking && fullReply) {
-          VisemeEngine.buildSyllablePlan(fullReply);
-          VisemeEngine.talking = true;
-          await say(fullReply);
-        }
 
-        replyDiv.classList.remove('streaming');
-        chatHistory.push({ role: 'user', content: text }, { role: 'assistant', content: fullReply });
-        try { localStorage.setItem('dassein_history', JSON.stringify(chatHistory.slice(-50))); } catch (_) {}
-      } catch (err) {
-        if (err.name === 'AbortError') return;
-        replyDiv.textContent = 'Could not reach the agent. Is the server running?';
-        replyDiv.classList.remove('streaming');
-      } finally {
-        abortController = null;
-      }
-    }
-
-    // --- Voice Input (F21-F25): VAD + Recording + Continuous mode ---
-    let micStream = null;
-    let audioCtx = null;
-    let analyser = null;
-    let vadInterval = null;
-    let recorder = null;
-    let recorderChunks = [];
-    let continuousMode = false;
-    let contLoopActive = false;
-    let contAbort = false;
-
-    async function ensureMic() {
-      if (micStream) return micStream;
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      return micStream;
-    }
-
-    function ensureAudioCtx() {
-      if (audioCtx) return audioCtx;
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      return audioCtx;
-    }
-
-    function getRMS() {
-      if (!analyser) return 0;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) { const v = data[i] / 128 - 1; sum += v * v; }
-      return Math.sqrt(sum / data.length);
-    }
-
-    function startRecording() {
-      return new Promise((resolve) => {
-        if (!micStream) { resolve(null); return; }
-        const mime = MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' :
-                     MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
-        recorderChunks = [];
-        recorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : {});
-        recorder.ondataavailable = (e) => { if (e.data.size > 0) recorderChunks.push(e.data); };
-        recorder.onstop = () => resolve(new Blob(recorderChunks, { type: mime || 'audio/webm' }));
-        recorder.start();
-      });
-    }
-
-    function stopRecording() {
-      if (recorder && recorder.state !== 'inactive') recorder.stop();
-    }
-
-    async function transcribeRecording(blob) {
-      if (!blob || blob.size === 0) return '';
-      const form = new FormData();
-      form.append('audio', blob, 'recording.' + (blob.type.includes('mp4') ? 'mp4' : 'webm'));
-      try {
-        const r = await fetch('/api/transcribe', { method: 'POST', body: form });
-        const data = await r.json();
-        return data.text || '';
-      } catch {
-        return '';
-      }
-    }
-
-    function startVAD(callback) {
-      if (vadInterval) return;
-      const THRESHOLD = 0.015;
-      const SILENCE_TICKS = 16;
-      const WARMUP_TICKS = 6;
-      let silenceCount = 0;
-      let warmupCount = 0;
-      const source = audioCtx.createMediaStreamSource(micStream);
-      source.connect(analyser);
-      vadInterval = setInterval(() => {
-        const rms = getRMS();
-        if (rms > THRESHOLD) { silenceCount = 0; warmupCount++; }
-        else { silenceCount++; }
-        if (warmupCount >= WARMUP_TICKS && silenceCount >= SILENCE_TICKS) {
-          callback();
-        }
-      }, 150);
-    }
-
-    function stopVAD() {
-      if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
-    }
-
-    function setContState(st) {
-      micBtn.classList.remove('live', 'cont-active');
-      if (st === 'live') { micBtn.classList.add('live'); micBtn.textContent = 'Stop'; }
-      else if (st === 'cont-active') { micBtn.classList.add('cont-active'); micBtn.textContent = 'Continuous \u00b7 on'; }
-      else { micBtn.textContent = 'Continuous'; }
-    }
-
-    async function conversationStep() {
-      if (contAbort) { contAbort = false; contLoopActive = false; return; }
-      unlockSpeech();
-      setContState('live');
-      const blobP = startRecording();
-      startVAD(async () => {
-        stopVAD();
-        stopRecording();
-        setContState('cont-active');
-        const blob = await blobP;
-        const text = await transcribeRecording(blob);
-        if (!text || text.startsWith('Transcribed') || text === '(Transcription failed)') {
-          if (continuousMode && !contAbort) {
-            setTimeout(() => conversationStep(), 300);
-          } else {
-            contLoopActive = false;
-          }
-          return;
-        }
-        chatInput.value = text;
-        await ask(text);
-        chatInput.value = '';
-        if (continuousMode && !contAbort) {
-          setTimeout(() => conversationStep(), 300);
-        } else {
-          contLoopActive = false;
-        }
-      });
-    }
-
-    function enterContinuous() {
-      if (continuousMode) return;
-      continuousMode = true;
-      contAbort = false;
-      contLoopActive = true;
-      ensureMic().then(() => {
-        ensureAudioCtx();
-        audioCtx.resume();
-        conversationStep();
-      }).catch(() => {
-        convoEl.textContent = 'Mic access denied.';
-        continuousMode = false;
-        setContState(null);
-      });
-    }
-
-    function exitContinuous() {
-      continuousMode = false;
-      contAbort = true;
-      stopVAD();
-      stopRecording();
-      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-      if (audioCtx) { audioCtx.close(); audioCtx = null; analyser = null; }
-      setContState(null);
-    }
 
     // --- Resize ---
     window.addEventListener('resize', () => {
@@ -1865,52 +1737,48 @@
       renderer.setSize(w, h);
     });
 
-    // --- Chat ---
-    const chatInput = document.getElementById('chatInput');
-    const sendBtn = document.getElementById('sendBtn');
+    // --- Voice control ---
     const micBtn = document.getElementById('micBtn');
-    const convoEl = document.getElementById('convo');
 
-    // Restore history UI on load
-    for (const m of chatHistory.slice(-20)) {
-      const div = document.createElement('div');
-      div.className = 'msg-line ' + m.role;
-      div.textContent = m.content;
-      convoEl.appendChild(div);
-    }
+    let voiceActive = false;
 
-    sendBtn.addEventListener('click', () => { ask(chatInput.value); chatInput.value = ''; });
-    chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { ask(chatInput.value); chatInput.value = ''; } });
-
-    micBtn.addEventListener('click', () => {
-      if (micBtn.classList.contains('live')) {
-        stopVAD(); stopRecording(); setContState(null);
-      } else if (continuousMode) {
-        exitContinuous();
-      } else {
-        unlockSpeech();
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-          const rec = new SR();
-          rec.lang = 'en-US'; rec.interimResults = false; rec.continuous = false;
-          rec.onresult = (e) => { const t = e.results[0][0].transcript; chatInput.value = t; ask(t); chatInput.value = ''; setContState(null); };
-          rec.onerror = () => { setContState(null); };
-          rec.onend = () => { setContState(null); };
-          setContState('live');
-          rec.start();
-        } else {
-          enterContinuous();
+    micBtn.addEventListener('click', async () => {
+      if (voiceActive) {
+        voiceActive = false;
+        conversation.stop();
+        VisemeEngine.stop();
+        micBtn.classList.remove('live');
+        micBtn.textContent = 'start voice';
+        const dot = document.querySelector('.dot');
+        if (dot) {
+          dot.style.background = '#00d4ff';
+          dot.style.boxShadow = '0 0 12px #00d4ff';
+          dot.style.animation = 'pulse 2.4s infinite';
         }
+        return;
+      }
+
+      micBtn.classList.add('live');
+      micBtn.textContent = 'connecting...';
+
+      try {
+        await conversation.start();
+        micBtn.textContent = 'stop';
+        voiceActive = true;
+      } catch (err) {
+        console.error('Voice start failed:', err);
+        micBtn.classList.remove('live');
+        micBtn.textContent = 'start voice';
       }
     });
-
-    window.__contHooks = { enterContinuous, exitContinuous, setContState, transcribeRecording };
 
     // --- Wave 5: window.agentAvatar public API ---
     window.agentAvatar = {
       loaded: true,
+      realtime: voiceRealtime,
+      conversation,
       setTalking(v) { VisemeEngine.talking = v; if (!v) VisemeEngine.stop(); },
-      speak(text) { unlockSpeech(); VisemeEngine.buildSyllablePlan(text); say(text); },
+
       lookAt(x, y) { /* gaze tracking from external source */ },
       express(name, strength) { EmotionState.setExpression(name, strength); },
       loadProfile(data) { /* future: dynamic profile loading */ },

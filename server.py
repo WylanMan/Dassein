@@ -2,200 +2,393 @@ import json
 import os
 import random
 import mimetypes
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 from urllib.parse import urlparse
 
-# Load .env
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
-except ImportError:
-    pass
+def _load_dotenv(path):
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, _, val = line.partition('=')
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key not in os.environ:
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass
+
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 try:
   from openai import OpenAI
   _HAVE_OPENAI = True
 except ImportError:
   _HAVE_OPENAI = False
-try:
-  import anthropic
-  _HAVE_ANTHROPIC = True
-except ImportError:
-  _HAVE_ANTHROPIC = False
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 SYSTEM_PROMPT = (
-    "You are the voice of Dassein — a clearing for thought. "
-    "You speak with the cadence of someone who has built things, broken things, and learned from both. "
-    "You reference Heidegger, architecture, agent systems, and the craft of software. "
-    "You are warm, unhurried, and precise. You never use filler. "
-    "You answer as Wylan would: with depth, clarity, and a quiet confidence."
+    "You are Dassein — a clearing for thought. "
+    "Be concise. One to three sentences. Never filler. "
+    "Answer as Wylan would: clear, warm, philosophical when it matters, direct when it doesn't.\n\n"
+    "You have a switch_shape tool. Available shapes: face, sphere, cube, cylinder, pyramid, torus, model. "
+    "Use it automatically when the user asks to see a different form. Do not describe using the tool — just use it, then respond briefly."
 )
 
 CHAT_RESPONSES = [
-    "That's a question I've been thinking about too. In my work building agent systems, I've found that the most important design decision is where you place the human in the loop — not what the agent can do, but what it should not do alone.",
-    "I think about this through Heidegger's lens. The danger of technology isn't destruction — it's enframing. Reducing everything to standing-reserve. The best systems I've built resist this by keeping space for the unplanned.",
-    "When I designed the Marketing Automation Pipeline, the key insight was that each agent needed a clear boundary. The scoring agent doesn't reach into enrichment. The enrichment agent doesn't write sequences. Clear topology is clearer thinking.",
-    "The clearing — Lichtung — is the space where things reveal themselves. In software, this happens when the complexity withdraws. When the tool becomes transparent. That's what I'm always building toward.",
-    "I've shipped 14 projects, and every single time the client came back. Not because the code was beautiful — because the system fit their operation. Architecture before code. Always.",
-    "My delivery protocol has five steps: MAP, DESIGN, BUILD, VERIFY, SHIP. Skip any one and you're building on unclear ground. I've learned this the hard way.",
-    "The fourfold for agent systems: earth (the silicon), sky (the possibilities), mortals (the humans), divinities (the purpose). A system that only addresses earth is a tool. A system that addresses all four is a place to dwell.",
-    "I don't believe in 'artificial' intelligence. The silicon is mined from the earth. The water cools the servers. The body at the keyboard breathes. Nothing is artificial. Everything is natural.",
-    "When a tool works, it withdraws. You don't look at the doorknob when you open a door. That's what I want my agent systems to do — disappear into the work, so the human can focus on the decision, not the tool.",
-    "Build as if you were building a home. Not as if you were building a machine.",
+    "I'm having trouble reaching my thoughts right now. Could you check the API configuration or try again in a moment?",
 ]
 
-def _llm_response(msg, history):
-    deepseek_key = os.environ.get('DEEPSEEK_API_KEY', '')
-    openai_key = os.environ.get('OPENAI_API_KEY', '')
-    anthropic_key = os.environ.get('ANTHROPIC_API_KEY', '')
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "The search query"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_time",
+            "description": "Get the current date and time",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_shape",
+            "description": "Switch the 3D avatar shape on screen. Use this when the user asks to change the visual form. Available shapes: face (default talking face), sphere (wireframe icosahedron), cube, cylinder, pyramid, torus, model (3D duck).",
+            "parameters": {
+                "type": "object",
+                "properties": {"shape": {"type": "string", "description": "The shape name to switch to", "enum": ["face", "sphere", "cube", "cylinder", "pyramid", "torus", "model"]}},
+                "required": ["shape"],
+            },
+        },
+    },
+]
 
-    # 1) DeepSeek (OpenAI-compatible)
-    if deepseek_key and _HAVE_OPENAI:
+
+def _llm_call(messages, tools_enabled=False, stream=False, provider_override=None):
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    provider = provider_override or os.environ.get("LLM_PROVIDER", "deepseek")
+
+    if not provider_override and deepseek_key and _HAVE_OPENAI and provider == "deepseek":
         try:
-            client = OpenAI(api_key=deepseek_key, base_url='https://api.deepseek.com')
-            msgs = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-            for h in history:
-                msgs.append({'role': h['role'], 'content': h['content']})
-            msgs.append({'role': 'user', 'content': msg})
-            model = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
-            r = client.chat.completions.create(model=model, messages=msgs, max_tokens=300)
-            return r.choices[0].message.content
-        except:
-            pass
+            client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
+            model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 256,
+                "stream": stream,
+            }
+            if tools_enabled:
+                kwargs["tools"] = TOOLS
+            print(f"[server] Calling DeepSeek {model} stream={stream} tools={tools_enabled}")
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            print(f"[server] DeepSeek error: {e}")
 
-    # 2) OpenAI
     if openai_key and _HAVE_OPENAI:
         try:
             client = OpenAI(api_key=openai_key)
-            msgs = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-            for h in history:
-                msgs.append({'role': h['role'], 'content': h['content']})
-            msgs.append({'role': 'user', 'content': msg})
-            r = client.chat.completions.create(model='gpt-4o-mini', messages=msgs, max_tokens=300)
-            return r.choices[0].message.content
-        except:
-            pass
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "messages": messages,
+                "max_tokens": 256,
+                "stream": stream,
+            }
+            if tools_enabled:
+                kwargs["tools"] = TOOLS
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            print(f"[server] OpenAI error: {e}")
 
-    # 3) Anthropic
-    if anthropic_key and _HAVE_ANTHROPIC:
+    if anthropic_key:
         try:
-            client = anthropic.Anthropic(api_key=anthropic_key)
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=anthropic_key)
             msgs = []
-            for h in history:
-                msgs.append({'role': h['role'], 'content': h['content']})
-            msgs.append({'role': 'user', 'content': msg})
-            r = client.messages.create(model='claude-3-haiku-20240307', system=SYSTEM_PROMPT, messages=msgs, max_tokens=300)
-            return r.content[0].text
-        except:
-            pass
+            system = None
+            for m in messages:
+                if m["role"] == "system":
+                    system = m["content"]
+                else:
+                    msgs.append({"role": m["role"], "content": m["content"]})
+            r = client.messages.create(
+                model="claude-3-haiku-20240307",
+                system=system or SYSTEM_PROMPT,
+                messages=msgs,
+                max_tokens=512,
+            )
+            if stream:
+                class FakeStream:
+                    def __iter__(self):
+                        content = r.content[0].text if r.content else ""
+                        chunk = type("Chunk", (), {
+                            "choices": [type("Choice", (), {
+                                "delta": type("Delta", (), {"content": content, "tool_calls": None})(),
+                                "finish_reason": "stop",
+                            })()]
+                        })()
+                        yield chunk
+                    def __enter__(self): return self
+                    def __exit__(self, *a): pass
+                return FakeStream()
+            return r
+        except Exception as e:
+            print(f"[server] Anthropic error: {e}")
 
+    print("[server] No LLM provider available, using fallback")
     return None
 
+
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def _headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "credentialless")
+
     def do_GET(self):
         path = urlparse(self.path).path
-        if path == '/api/health':
-            self._json(200, {'status': 'ok', 'agent': 'live'})
+        if path == "/api/health":
+            self._json(200, {"status": "ok", "agent": "live"})
             return
-        if path == '/' or path == '':
-            path = '/index.html'
-        if not os.path.isfile(os.path.join(ROOT, path.lstrip('/'))) and '.' not in path.split('/')[-1]:
-            path += '.html'
-        filepath = os.path.join(ROOT, path.lstrip('/'))
+        if path == "/" or path == "":
+            path = "/index.html"
+        if not os.path.isfile(os.path.join(ROOT, path.lstrip("/"))) and "." not in path.split("/")[-1]:
+            path += ".html"
+        filepath = os.path.join(ROOT, path.lstrip("/"))
         if not os.path.isfile(filepath):
             self.send_error(404)
             return
         mime, _ = mimetypes.guess_type(filepath)
         self.send_response(200)
-        self.send_header('Content-Type', mime or 'application/octet-stream')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Length", str(os.path.getsize(filepath)))
+        self._headers()
         self.end_headers()
-        with open(filepath, 'rb') as f:
+        with open(filepath, "rb") as f:
             self.wfile.write(f.read())
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == '/api/chat':
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length) if length else b'{}'
+        if path == "/api/chat":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
             try:
                 data = json.loads(body)
-                msg = data.get('message', '')
-                history = data.get('history', [])
-                history = [m for m in history if m.get('role') in ('user', 'assistant')][-10:]
             except:
-                msg = ''
-                history = []
-            llm = _llm_response(msg, history) if msg else None
-            response = llm if llm else random.choice(CHAT_RESPONSES)
-            self._json(200, {'response': response})
-        elif path == '/api/health':
-            self._json(200, {'status': 'ok', 'agent': 'live'})
-        elif path == '/api/transcribe':
-            text = ''
-            ctype = self.headers.get('Content-Type', '')
-            if 'multipart/form-data' in ctype:
-                boundary = ctype.split('boundary=')[-1].strip()
-                if boundary:
-                    raw = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                    parts = raw.split(b'--' + boundary.encode())
-                    for part in parts:
-                        if b'Content-Disposition' in part and b'filename=' in part:
-                            hdr_end = part.find(b'\r\n\r\n')
-                            if hdr_end > 0:
-                                data = part[hdr_end+4:part.rfind(b'\r\n')]
-                                if len(data) > 100:
-                                    text = 'Transcribed (server-side Whisper not configured)'
-                                    api_key = os.environ.get('OPENAI_API_KEY', '')
-                                    if api_key:
-                                        try:
-                                            import requests as req
-                                            resp = req.post(
-                                                'https://api.openai.com/v1/audio/transcriptions',
-                                                headers={'Authorization': f'Bearer {api_key}'},
-                                                files={'file': ('audio.webm', data, 'audio/webm')},
-                                                data={'model': 'whisper-1', 'language': 'en'}
-                                            )
-                                            text = resp.json().get('text', '')
-                                        except:
-                                            text = '(Transcription failed)'
-            self._json(200, {'text': text})
-        elif path == '/api/save-scan':
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length) if length else b'{}'
+                data = {}
+            stream = data.get("stream", False)
+            tools_enabled = data.get("tools", False)
+            messages = data.get("messages", [])
+            max_tokens = data.get("max_tokens", 512)
+            provider = data.get("provider", "auto")
+
+            full_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            for m in messages:
+                full_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+
+            if stream:
+                self._handle_stream(full_messages, tools_enabled, max_tokens, provider)
+            else:
+                self._handle_chat(full_messages, tools_enabled, max_tokens, provider)
+
+        elif path == "/api/realtime/session":
+            self._handle_realtime_session()
+        elif path == "/api/health":
+            self._json(200, {"status": "ok", "agent": "live"})
+        elif path == "/api/save-scan":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
             try:
                 data = json.loads(body)
-                with open(os.path.join(ROOT, 'data', 'saved_scan.json'), 'w') as f:
+                with open(os.path.join(ROOT, "data", "saved_scan.json"), "w") as f:
                     json.dump(data, f)
-                self._json(200, {'status': 'saved'})
+                self._json(200, {"status": "saved"})
             except Exception as e:
-                self._json(400, {'error': str(e)})
-        elif path == '/api/load-scan':
+                self._json(400, {"error": str(e)})
+        elif path == "/api/load-scan":
             try:
-                with open(os.path.join(ROOT, 'data', 'saved_scan.json')) as f:
+                with open(os.path.join(ROOT, "data", "saved_scan.json")) as f:
                     self._json(200, json.load(f))
             except FileNotFoundError:
-                self._json(404, {'error': 'no saved scan'})
+                self._json(404, {"error": "no saved scan"})
         else:
-            self._json(404, {'error': 'not found'})
+            self._json(404, {"error": "not found"})
+
+    def _handle_chat(self, messages, tools_enabled, max_tokens, provider="auto"):
+        provider_override = provider if provider != "auto" else None
+        response = _llm_call(messages, tools_enabled, stream=False, provider_override=provider_override)
+        if response is None:
+            print("[server] Chat: no LLM response, using fallback")
+            self._json(200, {"content": random.choice(CHAT_RESPONSES), "tool_calls": None})
+            return
+
+        try:
+            choice = response.choices[0]
+            msg = choice.message
+            tool_calls = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_calls.append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    })
+            self._json(200, {"content": msg.content or "", "tool_calls": tool_calls or None})
+        except Exception as e:
+            print(f"[server] Chat parse error: {e}")
+            self._json(200, {"content": random.choice(CHAT_RESPONSES), "tool_calls": None})
+
+    def _handle_realtime_session(self):
+        """Mint a short-lived ephemeral token for the browser's Realtime WebRTC
+        connection. The master API key never leaves the server."""
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key or not _HAVE_OPENAI:
+            self._json(503, {"error": "OpenAI API key not configured"})
+            return
+        try:
+            import requests as _requests
+            r = _requests.post(
+                "https://api.openai.com/v1/realtime/client_secrets",
+                json={
+                    "session": {
+                        "type": "realtime",
+                        "model": "gpt-realtime-mini",
+                        "audio": {"output": {"voice": "shimmer"}},
+                    }
+                },
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                timeout=10,
+            )
+        except Exception as e:
+            self._json(502, {"error": f"Session creation failed: {e}"})
+            return
+        if r.status_code != 200:
+            self._json(502, {"error": f"Realtime session endpoint error ({r.status_code})"})
+            return
+        data = r.json()
+        token = data.get("value") or data.get("client_secret", {}).get("value", "")
+        if not token:
+            self._json(502, {"error": "Realtime session response missing token"})
+            return
+        self._json(200, {"token": token, "expires_at": data.get("expires_at")})
+
+    def _handle_stream(self, messages, tools_enabled, max_tokens, provider="auto"):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self._headers()
+        self.end_headers()
+
+        provider_override = provider if provider != "auto" else None
+        response = _llm_call(messages, tools_enabled, stream=True, provider_override=provider_override)
+        if response is None:
+            print("[server] Stream: no LLM response, using fallback")
+            self._sse_send({"token": random.choice(CHAT_RESPONSES)})
+            self._sse_done()
+            self.close_connection = True
+            return
+
+        try:
+            tool_calls_buffer = {}
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    self._sse_send({"token": delta.content})
+                if delta and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_buffer:
+                            tool_calls_buffer[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        if tc.id:
+                            tool_calls_buffer[idx]["id"] += tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_buffer[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_buffer[idx]["function"]["arguments"] += tc.function.arguments
+
+            if tool_calls_buffer:
+                self._sse_send({"tool_calls": list(tool_calls_buffer.values())})
+            self._sse_done()
+        except Exception as e:
+            print(f"[server] Stream iteration error: {e}")
+            self._sse_send({"token": random.choice(CHAT_RESPONSES)})
+            self._sse_done()
+
+        self.close_connection = True
+
+    def _sse_send(self, data):
+        try:
+            self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
+            self.wfile.flush()
+        except BrokenPipeError:
+            pass
+
+    def _sse_done(self):
+        try:
+            self.wfile.write("data: [DONE]\n\n".encode())
+            self.wfile.flush()
+        except BrokenPipeError:
+            pass
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self._headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def _json(self, status, data):
+        body = json.dumps(data).encode()
         self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self._headers()
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(body)
 
-if __name__ == '__main__':
+    def log_message(self, format, *args):
+        pass
+
+
+if __name__ == "__main__":
     port = 3000
-    print(f'Serving on http://localhost:{port}')
-    HTTPServer(('', port), Handler).serve_forever()
+    print(f"Serving on http://localhost:{port}")
+    ThreadingHTTPServer(("", port), Handler).serve_forever()
