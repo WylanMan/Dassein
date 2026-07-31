@@ -2,6 +2,13 @@
 
 Current authoritative plan. Supersedes the v4 redesign plan, PLAN_TIER1.md, and VOICEPLAN.md. The Tier-1 shape system (spec model, modifiers, blend, cached bases, GLB loading) is implemented in the working tree; step 0 finishes and commits it.
 
+## Status — all steps shipped (2026-07-31)
+
+- **Step 0–5 ✅** — Tier-1 commit, compound builder + profiles (A1/A3), curated library (A4), DeepSeek spike (D2), `/api/summon` (B1/B2/B3 + S17/S19/S21), voice summoning (C1/C2/C3 + S18/S20).
+- **D2 verdict ✅ PASS** — 10/10 concepts built (gate ≥7); identifiability confirmed cold on fully-settled renders. Initial 0/10 was a **capture artifact**: screenshots were taken 350ms into a 1.5s morph (mid-transition frames). Lesson: **summon screenshots must be captured after the morph settles (~2.2s)**, not on spawn.
+- **F3 ✅** — full suite: 31 tests green (`tests/e2e/dassein.spec.js` S1–S16/T-series, `summon.spec.js` S17/S19/S21, `tier2.spec.js` S18/S20). DeepSeek mocked via `DEEPSEEK_BASE_URL` → `tests/support/summon_stub.py` (port 3001).
+- **Deploy** — see Deploy section; `DEEPSEEK_API_KEY` must be set in Vercel for the LLM tier.
+
 ## Premise
 
 The agent writes a shape's **DNA** (a spec); the client's Tier-1 pipeline synthesizes the form (build → weld → FPS → 478-point morph). Two sources, one data structure:
@@ -111,12 +118,12 @@ Build the spec through the existing pipeline; post-build sanity: all-finite, spr
 
 ## Execution order (commit after each)
 
-0. **Ship Tier 1** — A4 voice schema (speakable params), A5 (`blob`/`helix` + family params), C (S8–S13), B5 (AGENTS.md). Working tree has the rest uncommitted.
-1. **A1 + A3** — compound builder + profile params (client-side, `__testHooks`-verifiable).
-2. **A4** — curated spec library → demo day: voice summons 10+ curated objects.
-3. **D2** — DeepSeek spike against the gate (verdict gates everything after).
-4. **B1 + B2 + B3** — `/api/summon` + cache + validator + fix-retry + S17/S19/S21.
-5. **C1 + C2 + C3** — voice tool, stand-in morph, narration, re-roll + S18/S20.
-6. **F3 full suite** — AGENTS.md + docs update, deploy.
+0. **Ship Tier 1** ✅ — A4 voice schema (speakable params), A5 (`blob`/`helix` + family params), C (S8–S13), B5 (AGENTS.md).
+1. **A1 + A3** ✅ — compound builder + profile params (client-side, `__testHooks`-verifiable).
+2. **A4** ✅ — curated spec library → demo day: voice summons 16 curated objects.
+3. **D2** ✅ — DeepSeek spike against the gate: 10/10 built, ≥4 identifiable cold (settled renders). Verdict: **proceed**.
+4. **B1 + B2 + B3** ✅ — `/api/summon` + cache + validator + fix-retry + S17/S19/S21.
+5. **C1 + C2 + C3** ✅ — voice tool, stand-in morph, narration, re-roll + S18/S20.
+6. **F3 full suite** ✅ — AGENTS.md + docs update, deploy.
 
 **Risks:** DeepSeek format drift (pinned prompt, strict validator, one retry, tier-0 fallback); compound edge-bridging (bounded volume + gate); coordinate misalignment (orientation vocab + anchor + caps). Kill switch: D2.
