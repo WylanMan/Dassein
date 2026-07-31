@@ -82,4 +82,39 @@ test.describe('Tier 2 client pipeline', () => {
     expect(result.spec.id).toBe('widget');
     expect(result.spec.type).toBe('goblet'); // stub returns a goblet spec
   });
+
+  test('S23: face-as-loading — summon wears a contemplation face, then morphs to shape', async ({ page }) => {
+    await enterAgent(page);
+
+    // Start the summon without awaiting it; the stub sleeps 2.5s so the
+    // in-flight contemplation state is observable. (Concept avoids every
+    // curated alias so it routes to the LLM tier, not the fast path.)
+    const promise = page.evaluate(() =>
+      window.agentAvatar.realtime._tools.summon_object({ concept: 'slow_reliquary' }));
+
+    let sawFace = false;
+    for (let i = 0; i < 25; i++) {
+      const shape = await page.evaluate(() => window.__testHooks.currentShape);
+      if (shape === 'face') { sawFace = true; break; }
+      await page.waitForTimeout(100);
+    }
+    expect(sawFace).toBe(true);
+
+    const msg = await promise;
+    expect(msg).toContain('Summoned slow_reliquary');
+
+    // Spec arrival runs the standard face -> shape morph.
+    await page.waitForFunction(() => window.__testHooks.currentShape === 'slow_reliquary', { timeout: 5000 });
+    const result = await page.evaluate(() => ({
+      shape: window.__testHooks.currentShape,
+      count: window.__testHooks.shapeTargets.length,
+      specType: window.__scene.spec?.type,
+      finite: window.__testHooks.shapeTargets.every(p =>
+        Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)),
+    }));
+    expect(result.shape).toBe('slow_reliquary');
+    expect(result.count).toBe(478);
+    expect(result.specType).toBe('goblet');
+    expect(result.finite).toBe(true);
+  });
 });

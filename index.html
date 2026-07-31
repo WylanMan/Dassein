@@ -1920,15 +1920,25 @@
     // Every failure degrades to a seeded abstract form — never a crash (B3).
     let _summonState = null;   // { concept, seed } for re-roll detection
     let _summonToken = 0;      // guards stale async completions
+    // Phase 0: face-as-loading. While a spec is in flight the agent wears a
+    // contemplation face (breathing + iris shimmer) instead of a seeded blob.
+    let _summonInFlight = false;
 
     function summonStandIn(concept) {
-      const spec = {
+      _summonInFlight = true;
+      spawnObject({ type: 'face' });
+    }
+
+    // Seeded abstract fallback — the old stand-in; shown only when synthesis
+    // fails and the summon degrades (B3 guarantee unchanged).
+    function summonAbstract(concept) {
+      _summonInFlight = false;
+      spawnObject({
         id: 'abstract',
         type: 'blob',
-        mods: { jitter: { amp: 0.06 } },
+        mods: { jitter: { amp: 0.12 } },
         seed: hashString(String(concept || 'abstract')),
-      };
-      spawnObject(spec);
+      });
     }
 
     async function fetchSummonSpec(concept, seed) {
@@ -1948,6 +1958,7 @@
     // B3 post-build sanity: spawn the spec, but on any build failure degrade to
     // a seeded abstract form instead of surfacing an error.
     async function spawnWithFallback(spec, concept) {
+      _summonInFlight = false; // spec landed — the contemplation face departs
       try {
         await spawnObject(spec);
         const ok = shapeTargets.every(p =>
@@ -1956,12 +1967,7 @@
         return true;
       } catch (e) {
         console.warn('[summon] build failed, abstract fallback:', e);
-        await spawnObject({
-          id: 'abstract',
-          type: 'blob',
-          mods: { jitter: { amp: 0.12 } },
-          seed: hashString(String(concept || 'abstract')),
-        });
+        await summonAbstract(concept);
         return false;
       }
     }
@@ -1996,14 +2002,15 @@
       ]);
       if (token !== _summonToken) return 'Summoned.';
       if (result.timeout) {
-        // Narrate-and-continue: finish the morph when the spec arrives.
+        // Narrate-and-continue: the face stays until the spec lands, then the
+        // standard face→shape morph finishes the reveal (B3 unchanged).
         promise.then(r => {
           if (token === _summonToken && r && !r.abstract) spawnWithFallback(r.spec, norm);
         }).catch(() => {});
-        return `Summoning ${norm} — its form is still settling.`;
+        return `I'm concentrating on ${norm} — its form is still settling.`;
       }
       if (result.abstract) {
-        summonStandIn(norm); // reinforce the seeded abstract form
+        summonAbstract(norm); // reinforce the seeded abstract form
         return `It resisted capture; here is its abstract form.`;
       }
       const ok = await spawnWithFallback(result.spec, norm);
@@ -2291,6 +2298,21 @@
         }
         // Vertical breathing bob (all shapes)
         if (icoGroup) icoGroup.position.y = 0.01 * Math.sin(t * 1.3 + 0.6) * 0.6;
+
+        // Phase 0: contemplation while a summon is in flight — slow breathing
+        // on the whole net plus an iris glow shimmer. Skipped mid-morph so the
+        // pulse never fights a tween.
+        if (_summonInFlight && !isAnimating) {
+          icoGroup.scale.setScalar(1 + 0.02 * Math.sin(t * 1.8));
+          if (currentShape === 'face') {
+            for (const n of faceIrisNodes) {
+              const base = (n.geometry.parameters?.radius > 0.03 ? 0.15 : 1);
+              n.material.opacity = base * (0.72 + 0.28 * Math.sin(t * 3.2));
+            }
+          }
+        } else if (icoGroup.scale.x !== 1) {
+          icoGroup.scale.setScalar(1);
+        }
       }
       renderer.render(scene, camera);
     }

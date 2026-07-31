@@ -9,6 +9,7 @@ DEEPSEEK_BASE_URL. Behavior is keyed off the concept in the last user message:
 
 import json
 import re
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -47,6 +48,11 @@ class StubHandler(BaseHTTPRequestHandler):
         elif concept == "retry_spec":
             spec = ({"id": "bad", "type": "flux-capacitor"} if not is_retry
                     else {"id": "retry_fixed", "type": "gem"})
+        elif concept == "slow_reliquary":
+            # Slow response (Phase 0): lets the client's face-as-loading
+            # contemplation state be observed before the spec lands.
+            time.sleep(2.5)
+            spec = {"id": "slow_reliquary", "type": "goblet", "params": {}, "size": "medium"}
         else:
             slug = re.sub(r"[^a-z0-9]+", "_", concept.lower()).strip("_") or "thing"
             spec = {"id": slug, "type": "goblet", "params": {}, "size": "medium"}
