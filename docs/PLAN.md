@@ -125,7 +125,7 @@ Depth ≤ 5, ≤ 32 nodes (validated). Closed-form SDFs only:
 
 1. **Phase 0** — face-as-loading (independent, ships immediately). ✅ *done — commit `a371381`*
 2. **Phase 1** — `sdf-core.mjs` + `targetsFromSDF` + order-aligned morph, behind the v2 route; benchmarks; S22. ✅ *done — commit `70052c5`*
-3. **Phase 2** — server grammar v2 (validator, prompt, cache rekey, stub fixtures); S17/S19/S21. 🔄 *in progress*
+3. **Phase 2** — server grammar v2 (validator, prompt, cache rekey, stub fixtures); S17/S19/S21. ✅ *done — commit `08d07bb`*
 4. **Phase 3** — curated v2 re-expression **behind the screenshot gate**; S25. ⬜
 5. **Phase 4** — flywheel (keep-this + promote script), structured variation, S23/S24/S26, AGENTS.md + docs. ⬜
 
@@ -135,7 +135,7 @@ Depth ≤ 5, ≤ 32 nodes (validated). Closed-form SDFs only:
 |---|---|---|
 | 0 — Face-as-loading | ✅ Shipped | `summonStandIn` → contemplation face (breathing + iris shimmer); `summonAbstract` fallback preserved; timeout narration "I'm concentrating…"; **S23 e2e added** (stub gains `slow_reliquary`). |
 | 1 — SDF kernel + order-aligned net | ✅ Shipped | `sdf-core.mjs` (pure ES module), ~30-op catalog, Catmull-Rom profiles, radial probing along the 478 canonical directions, ray-miss fill, hard booleans + `k ≤ 0.15` smooth accents; `spec.schema === 2` route + `v2:` cache keys in `index.html`; **S18v2 / S18v2b / S22 / perf-gate** e2e + isolated Node unit tests (`tests/unit/sdf-core.test.mjs`). |
-| 2 — Server grammar v2 | 🔄 In progress | `api/summon.py` mid-edit: op catalog + `validate_v2_root` + `_root_hash` + `V2_EXAMPLES` in; `build_prompt` / `SpecCache` v2 rekey / `summon()` rewrite / stub fixtures / S17/S19/S21 still to go. |
+| 2 — Server grammar v2 | ✅ Shipped | `build_prompt` rebuilt around the angular identity (idiom cookbook: fused→`union`, spikes/teeth→`repeat`/`polar_repeat`, symmetric→`mirror`, vessels→`revolve`, slabs→`extrude`; negative guidance; `V2_EXAMPLES` few-shot bank); `validate_v2_spec` = top-level id/size/root checks over the recursive `validate_v2_root`; `SpecCache` rekeyed to `v2:<root-hash>:<seed>` with a slug→`{id, root}` index (legacy string index entries treated as a miss); `summon()` = single-pass v2 generation + one fix-retry + 422 abstractify; `summon_stub.py` serves v2 fixtures; **S17/S19/S21 updated** and S20/S23 re-pointed at v2 specs (see deviations). |
 | 3 — Curated v2 + screenshot gate | ⬜ | |
 | 4 — Flywheel + structured variation + docs | ⬜ | S23 shipped early under Phase 0's gate. |
 
@@ -145,6 +145,7 @@ Depth ≤ 5, ≤ 32 nodes (validated). Closed-form SDFs only:
 - **Ray-miss fill** uses all sign changes along a ray (`probeSurfaces`), deduped into a surface cloud, then seeded-FPS to exactly 478 — an implementation of "seeded-FPS over the hit points, reindex" that also captures far/cavity walls, so hollow and ring forms (torus/crown/vault) keep their full silhouette instead of collapsing to the near wall only.
 - Two kernel bugs found and fixed in Phase 1: (1) `traceRay` must clamp its final probe to `maxR` or the exponential step overshoots and every ray misses; (2) `revolve` must mirror its profile across the axis — closing the polygon through the axis put the origin *on* the boundary (`d(0)=0`), so every ray reported a surface at `r ≈ 0`.
 - **S23** (listed under Phase-4 tests) was implemented in Phase 0 because Phase 0's own gate names it.
+- **S20/S23 updated in Phase 2, not Phase 3:** the stub now serves v2 fixtures by default, and those two tests consume the stub's output directly (assertions on `spec.type === 'goblet'`), so they had to move to `schema: 2` + `root` assertions when the fixture flipped. No production client change was needed — the v2 route already existed from Phase 1.
 
 ## Risks
 
