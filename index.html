@@ -1420,12 +1420,12 @@
     }
     function applyMods(pts, mods, seed) {
       if (mods.squash) squashPoints(pts, mods.squash.kx ?? 1, mods.squash.ky ?? 1, mods.squash.kz ?? 1);
-      if (mods.bend) bendPoints(pts, mods.bend);
-      if (mods.twist) twistPoints(pts, mods.twist);
-      if (mods.taper) taperPoints(pts, mods.taper);
-      if (mods.bulge) bulgePoints(pts, mods.bulge);
-      if (mods.spherize) spherizePoints(pts, mods.spherize);
-      if (mods.jitter) jitterPoints(pts, mods.jitter, seed);
+      if (mods.bend) bendPoints(pts, typeof mods.bend === 'object' ? (mods.bend.r ?? 0) : mods.bend);
+      if (mods.twist) twistPoints(pts, typeof mods.twist === 'object' ? (mods.twist.deg ?? 0) : mods.twist);
+      if (mods.taper) taperPoints(pts, typeof mods.taper === 'object' ? (mods.taper.k ?? 0) : mods.taper);
+      if (mods.bulge) bulgePoints(pts, typeof mods.bulge === 'object' ? (mods.bulge.k ?? 0) : mods.bulge);
+      if (mods.spherize) spherizePoints(pts, typeof mods.spherize === 'object' ? (mods.spherize.k ?? 0) : mods.spherize);
+      if (mods.jitter) jitterPoints(pts, typeof mods.jitter === 'object' ? (mods.jitter.amp ?? 0) : mods.jitter, seed);
       return pts;
     }
 
@@ -2158,14 +2158,37 @@
     const voiceRealtime = new VoiceRealtime({
       voice: 'shimmer',
       tools: {
-        spawn_object: async ({ object, size }) => {
+        spawn_object: async (args = {}) => {
+          const { object, size, seed, twist, stretch, sharpness, blend_with, blend_ratio, url, params } = args;
           if (!object) return 'No object specified.';
-          if (!PROCEDURAL_NAMES.includes(object) && object !== 'face' && object !== 'sphere' && object !== 'model') {
-            return `Unknown object "${object}". Valid types: ${PROCEDURAL_NAMES.join(', ')}, face, sphere, model.`;
+          const VALID_TYPES = [...PROCEDURAL_NAMES, 'face', 'sphere', 'model'];
+          if (!VALID_TYPES.includes(object)) {
+            return `Unknown object "${object}". Valid types: ${VALID_TYPES.join(', ')}. ` +
+              `You can also modulate with twist, stretch, or sharpness; blend (blend_with, blend_ratio); ` +
+              `pass params (sides, teeth, turns, inner, thickness, bulge, waist); or a model url.`;
           }
+          const spec = { type: object, size: ['small', 'medium', 'large'].includes(size) ? size : 'medium' };
+          if (seed !== undefined && seed !== null && !Number.isNaN(Number(seed))) spec.seed = Number(seed);
+          const mods = {};
+          if (twist !== undefined && twist !== null && Number(twist) !== 0) mods.twist = { deg: Math.max(0, Math.min(1, Number(twist))) * 90 };
+          if (stretch !== undefined && stretch !== null && Number(stretch) !== 0) mods.squash = { kx: 1, ky: Number(stretch), kz: 1 };
+          if (sharpness !== undefined && sharpness !== null && Number(sharpness) !== 0) mods.jitter = { amp: Math.max(0, Math.min(1, Math.abs(Number(sharpness)))) * 0.12 };
+          if (Object.keys(mods).length) spec.mods = mods;
+          if (blend_with && PROCEDURAL_NAMES.includes(blend_with) && blend_with !== object) {
+            const ratio = blend_ratio === undefined || blend_ratio === null
+              ? 0.5
+              : Math.max(0, Math.min(1, Number(blend_ratio)));
+            spec.blend = { with: blend_with, ratio };
+          }
+          if (params && typeof params === 'object') {
+            const clean = {};
+            for (const k of Object.keys(params)) if (params[k] !== undefined) clean[k] = params[k];
+            if (Object.keys(clean).length) spec.params = clean;
+          }
+          if (url) spec.url = url;
           try {
-            await spawnObject(object, size || 'medium');
-            return `Spawned ${object}.`;
+            await spawnObject(spec);
+            return `Spawned ${object}${spec.blend ? ` blended into ${spec.blend.with}` : ''}.`;
           } catch (e) {
             return `Failed to spawn ${object}: ${e.message}`;
           }

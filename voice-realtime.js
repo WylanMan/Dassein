@@ -7,11 +7,20 @@
 
 const REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 
+const OBJECT_TYPES = [
+  'face', 'sphere', 'cube', 'cylinder', 'pyramid', 'cone', 'torus', 'model',
+  'gem', 'rock', 'crystal', 'pebble', 'vase', 'goblet', 'rocket', 'bowl',
+  'star', 'gear', 'cross', 'hexagon', 'knot', 'spiral',
+];
+
 const INSTRUCTIONS =
   'You are Dassein — a clearing for thought. Be concise. One to three sentences. Never filler. ' +
   'Answer as Wylan would: clear, warm, philosophical when it matters, direct when it doesn\'t.\n\n' +
-  'You have a switch_shape tool. Available shapes: face, sphere, cube, cylinder, pyramid, torus, model. ' +
-  'Use it automatically when the user asks to see a different form. Do not describe using the tool — just use it, then respond briefly.\n' +
+  'You have a spawn_object tool. It renders any object as a wireframe 3D form on screen. ' +
+  `Available objects: ${OBJECT_TYPES.join(', ')}. ` +
+  'Use it automatically when the user asks to see, show, or turn into an object or shape. Do not describe using the tool — just use it, then respond briefly.\n' +
+  'You can modulate a spawn with small parameters: twisted (twist), stretched (stretch), spikier (sharpness), blend X into Y (blend_with, blend_ratio), or surprise me (seed). Keep your vocabulary natural — never read parameter names aloud.\n' +
+  'For the model object, pass url to load a specific .glb; omitting it loads the default duck.\n' +
   'You also have web_search, get_time, and get_weather tools. Use them when the user asks for current information, the time, or the weather.';
 
 const TOOL_DEFS = [
@@ -43,12 +52,35 @@ const TOOL_DEFS = [
   },
   {
     type: 'function',
-    name: 'switch_shape',
-    description: 'Switch the 3D avatar shape on screen. Use this when the user asks to change the visual form. Available shapes: face (default talking face), sphere (wireframe icosahedron), cube, cylinder, pyramid, torus, model (3D duck).',
+    name: 'spawn_object',
+    description: 'Render an object as a wireframe 3D form on screen. Available objects: ' + OBJECT_TYPES.join(', ') + '. Modulate a spawn with twist, stretch, or sharpness; blend one object into another (blend_with, blend_ratio); or pass a seed for a surprise. For the model object, pass url to load a specific .glb (omitting it loads the default duck).',
     parameters: {
       type: 'object',
-      properties: { shape: { type: 'string', description: 'The shape name to switch to', enum: ['face', 'sphere', 'cube', 'cylinder', 'pyramid', 'torus', 'model'] } },
-      required: ['shape'],
+      properties: {
+        object: { type: 'string', description: 'The object to render', enum: OBJECT_TYPES },
+        size: { type: 'string', description: 'Relative size of the object', enum: ['small', 'medium', 'large'] },
+        seed: { type: 'number', description: 'Deterministic randomness seed — use for "surprise me"' },
+        twist: { type: 'number', description: 'Twist intensity, 0..1 (maps to up to 90° over the height)' },
+        stretch: { type: 'number', description: 'Vertical stretch factor (1 = unchanged, 1.5 = stretched taller)' },
+        sharpness: { type: 'number', description: 'Spikiness / jaggedness, 0..1' },
+        blend_with: { type: 'string', description: 'Blend this object into another object type', enum: OBJECT_TYPES },
+        blend_ratio: { type: 'number', description: 'How much of blend_with to mix in, 0..1' },
+        url: { type: 'string', description: 'Optional .glb URL to load as the model' },
+        params: {
+          type: 'object',
+          description: 'Family-specific parameters (sides, teeth, turns, inner, thickness, bulge, waist)',
+          properties: {
+            sides: { type: 'number' },
+            teeth: { type: 'number' },
+            turns: { type: 'number' },
+            inner: { type: 'number' },
+            thickness: { type: 'number' },
+            bulge: { type: 'number' },
+            waist: { type: 'number' },
+          },
+        },
+      },
+      required: ['object'],
     },
   },
 ];
