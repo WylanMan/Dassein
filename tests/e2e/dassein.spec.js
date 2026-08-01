@@ -114,19 +114,6 @@ test.describe('Reset to landing', () => {
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.__scene.state === 'landing', { timeout: 8000 });
   });
-
-  test('Home nav link resets to landing', async ({ page }) => {
-    await page.goto(BASE);
-    await page.waitForFunction(() => window.__scene?.faceLandmarks3D);
-    await page.locator('#scene').click({ position: { x: 512, y: 384 } });
-    await page.waitForFunction(() => window.__scene.state === 'agent', { timeout: 8000 });
-
-    await page.click('#navHome');
-    await page.waitForTimeout(2500);
-
-    const state = await page.evaluate(() => window.__scene.state);
-    expect(state).toBe('landing');
-  });
 });
 
 test.describe('Procedural spawn (tier 0)', () => {
@@ -160,12 +147,10 @@ test.describe('Procedural spawn (tier 0)', () => {
       shape: window.__testHooks.currentShape,
       edgeCount: window.__testHooks.shapeTargetEdgeIndices.length,
       state: window.__scene.state,
-      activePills: [...document.querySelectorAll('.shape-pill.active')].map(p => p.dataset.shape),
     }));
     expect(result.shape).toBe('gem');
     expect(result.edgeCount).toBeGreaterThan(0);
     expect(result.state).toBe('agent');
-    expect(result.activePills).toEqual([]);
   });
 
   test('S2: fresh builds are deterministic', async ({ page }) => {
@@ -360,10 +345,10 @@ test.describe('Procedural spawn (tier 0)', () => {
     expect(result.edgeCount).toBeGreaterThan(0);
   });
 
-  test('S13: pills interrupt an in-flight morph', async ({ page }) => {
+  test('S13: spawn interrupts an in-flight morph', async ({ page }) => {
     await page.evaluate(() => window.__testHooks.spawnObject('gem', 'medium', { force: true }));
     await page.waitForTimeout(250);
-    await page.locator('.shape-pill[data-shape="torus"]').click();
+    await page.evaluate(() => window.__testHooks.spawnObject('torus', 'medium', { force: true }));
     await waitMorphToTargets(page, 'shapeTargets');
     const result = await page.evaluate(() => {
       const arr = window.__scene.seedPositionsArr;

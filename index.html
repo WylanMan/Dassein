@@ -36,21 +36,6 @@
     }
     #overlay.hidden { opacity: 0; pointer-events: none; }
 
-    nav {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
-      padding: 20px 10vw;
-      background: rgba(5, 8, 15, 0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      opacity: 0; transition: opacity 0.6s ease;
-      pointer-events: none;
-    }
-    nav.visible { opacity: 1; pointer-events: all; }
-    nav ul { list-style: none; display: flex; gap: 28px; align-items: center; font-family: "Caveat", cursive; font-size: 18px; }
-    nav li:first-child { color: #b9b6c2; }
-    nav a { color: #9a97a3; text-decoration: none; transition: color 0.3s; }
-    nav a.active, nav span.active { color: #00d4ff; cursor: default; }
-
     #agent-ui {
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 5;
       display: flex; flex-direction: column; align-items: center;
@@ -93,20 +78,6 @@
     }
     button:hover { background: #1c1c28; border-color: rgba(0, 212, 255, 0.35); color: #b9b6c2; }
     #micBtn.live { background: #201518; border-color: #ff4466; color: #ffb3ba; }
-
-    .shape-row {
-      display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
-      opacity: 0; pointer-events: none; transition: opacity 0.5s;
-    }
-    .shape-row.visible { opacity: 1; pointer-events: all; }
-    .shape-pill {
-      font-size: 11px; padding: 4px 12px; border-radius: 999px;
-      background: rgba(0, 212, 255, 0.06); color: #9a97a3;
-      border: 1px solid rgba(0, 212, 255, 0.10);
-      cursor: pointer; transition: all 0.25s;
-    }
-    .shape-pill:hover { background: rgba(0, 212, 255, 0.12); color: #b9b6c2; border-color: rgba(0, 212, 255, 0.25); }
-    .shape-pill.active { background: rgba(0, 212, 255, 0.15); color: #00d4ff; border-color: rgba(0, 212, 255, 0.40); }
   </style>
 </head>
 <body>
@@ -116,31 +87,12 @@
     <h1>Dassein</h1>
   </div>
 
-  <nav>
-    <ul>
-      <li>Dassein</li>
-      <li><a href="#" id="navHome">home</a></li>
-      <li><span id="navAgent" class="active">agent</span></li>
-      <li><a href="/blogs" id="navBlogs">blogs</a></li>
-    </ul>
-  </nav>
-
   <div id="agent-ui">
     <div class="stage" id="stage">
       <canvas id="c"></canvas>
     </div>
     <div class="caption">
       <span class="dot"></span>
-      <span>the questioner</span>
-    </div>
-    <div class="shape-row" id="shapeRow">
-      <span class="shape-pill active" data-shape="face">face</span>
-      <span class="shape-pill" data-shape="sphere">sphere</span>
-      <span class="shape-pill" data-shape="cube">cube</span>
-      <span class="shape-pill" data-shape="cylinder">cylinder</span>
-      <span class="shape-pill" data-shape="pyramid">pyramid</span>
-      <span class="shape-pill" data-shape="torus">torus</span>
-      <span class="shape-pill" data-shape="model">model</span>
     </div>
     <div class="bar">
       <button id="micBtn">start voice</button>
@@ -812,8 +764,7 @@
       });
 
       gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
-      gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); document.getElementById('shapeRow').classList.add('visible'); } });
-      gsap.to('nav', { opacity: 1, duration: 0.6, delay: 2.0, onStart: () => document.querySelector('nav').classList.add('visible') });
+      gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); } });
 
       gsap.to({}, { delay: 2.5, onComplete: () => { state = 'agent'; isAnimating = false; if (window.__scene) window.__scene.state = state; startBehavior(); } });
     }
@@ -829,7 +780,6 @@
       // Kill any active GSAP tweens on these objects
       gsap.killTweensOf('#overlay');
       gsap.killTweensOf('#agent-ui');
-      gsap.killTweensOf('nav');
       gsap.killTweensOf(icoDotMat);
       gsap.killTweensOf(camera.position);
       gsap.killTweensOf(icoEdgeMat);
@@ -898,19 +848,13 @@
       // Restore overlay
       gsap.to('#overlay', { opacity: 1, duration: 0.4, delay: 0.3 });
 
-      // Hide agent UI and nav
-      gsap.to('#agent-ui', { opacity: 0, duration: 0.3, onComplete: () => { document.getElementById('agent-ui').classList.remove('visible'); document.getElementById('shapeRow').classList.remove('visible'); } });
-      gsap.to('nav', { opacity: 0, duration: 0.3, onComplete: () => document.querySelector('nav').classList.remove('visible') });
-
-      // Reset nav active states
-      document.getElementById('navHome').classList.add('active');
-      document.getElementById('navAgent').classList.remove('active');
+      // Hide agent UI
+      gsap.to('#agent-ui', { opacity: 0, duration: 0.3, onComplete: () => { document.getElementById('agent-ui').classList.remove('visible'); } });
 
       // Reset shape to face
       shapeTargets = null;
       shapeTargetEdgeIndices = null;
       currentShape = 'face';
-      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === 'face'));
 
       gsap.to({}, {
         delay: 1.8,
@@ -920,18 +864,6 @@
         }
       });
     }
-
-    // --- Nav handlers ---
-    document.getElementById('navHome').addEventListener('click', (e) => {
-      e.preventDefault();
-      resetToLanding();
-    });
-
-    document.getElementById('navBlogs').addEventListener('click', (e) => {
-      if (state === 'landing') return;
-      e.preventDefault();
-      window.location.href = '/blogs';
-    });
 
     // --- Keyboard ---
     window.addEventListener('keydown', (e) => {
@@ -1731,10 +1663,6 @@
       return targets;
     }
 
-    function deactivateShapePills() {
-      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', false));
-    }
-
     async function spawnObject(spec, legacySize, legacyOpts = {}) {
       if (typeof spec === 'string') spec = { type: spec, size: legacySize || 'medium', ...legacyOpts };
       const type = spec.type;
@@ -1746,7 +1674,6 @@
       const targets = buildProceduralTargets(spec, legacyOpts.force);
       currentShape = spec.id || (Array.isArray(spec.parts) ? 'compound' : type);
       window.__scene.spec = spec;
-      deactivateShapePills();
       interruptMorph();
       morphTo(type, targets);
       return type;
@@ -2050,9 +1977,6 @@
       const prevShape = currentShape;
       currentShape = name;
 
-      // Update pill active states
-      document.querySelectorAll('.shape-pill').forEach(p => p.classList.toggle('active', p.dataset.shape === name));
-
       if (name === 'face') { morphTo(name, faceLMs); return; }
       if (name === 'sphere') { morphTo(name, icoPoints); return; }
       if (name === 'model') {
@@ -2074,7 +1998,6 @@
     }
 
     // Shared morph entry — handles the landing reveal (overlay fade, camera
-    // pull-back, agent-ui/nav reveal) and the in-agent morph.
     function morphTo(name, targets) {
       if (state === 'landing') {
         if (name === 'face') { triggerTransform(); return; }
@@ -2082,8 +2005,7 @@
         gsap.to('#overlay', { opacity: 0, duration: 0.5 });
         morphToTarget(targets, name, 2.0);
         gsap.to(camera.position, { z: 4.5, duration: 2.0, delay: 0.3, ease: 'power2.inOut' });
-        gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); document.getElementById('shapeRow').classList.add('visible'); } });
-        gsap.to('nav', { opacity: 1, duration: 0.6, delay: 2.0, onStart: () => document.querySelector('nav').classList.add('visible') });
+        gsap.to('#agent-ui', { opacity: 1, duration: 0.6, delay: 2.2, onStart: () => { document.getElementById('agent-ui').classList.add('visible'); } });
         return;
       }
 
@@ -2181,22 +2103,6 @@
         }
       });
     }
-
-    // --- Shape pill click handlers ---
-    // Pills interrupt any in-flight morph (same as voice barge-in) and route
-    // procedural names through the spec path; face/sphere/model keep
-    // switchShape semantics (the model pill loads the Duck by default).
-    document.querySelectorAll('.shape-pill').forEach(pill => {
-      pill.addEventListener('click', () => {
-        const name = pill.dataset.shape;
-        interruptMorph();
-        if (name === 'face' || name === 'sphere' || name === 'model') {
-          switchShape(name).catch(() => {});
-        } else {
-          spawnObject({ type: name, size: 'medium' });
-        }
-      });
-    });
 
     // --- FPS monitor + render loop ---
     const fpsEl = document.createElement('div');
