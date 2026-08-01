@@ -515,12 +515,19 @@ class SpecCache:
             return {}
 
     def _save_index(self):
+        # Best-effort only: the Vercel serverless filesystem is read-only (no
+        # KV configured), so a failed index write must never take the endpoint
+        # down. Caching is purely an optimization — a read-only FS degrades to
+        # a cache miss and a fresh synthesis call.
         if self._kv_url or not self._index:
             return
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = self._index_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._index))
-        tmp.replace(self._index_file)
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = self._index_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._index))
+            tmp.replace(self._index_file)
+        except OSError:
+            pass
 
     def _key(self, root_hash, seed):
         return f"v2:{root_hash}:{seed}.json"
