@@ -178,6 +178,41 @@ class TestPlanHandlers(unittest.IsolatedAsyncioTestCase):
         res = self.cli.run_tool("note_create", {"path": "memories/note-1", "title": "Note 1", "body": "hi"})
         self.assertTrue(res.startswith("OK:"))
 
+    # -- multi-project voice disambiguation --------------------------------
+
+    async def _fork_two_projects(self):
+        a = await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        b = await self.engine.fork_session(goal="y", repo=self.repo, branch="db-a", project="Database")
+        return a, b
+
+    async def test_set_project_and_list_ops(self):
+        await self._fork_two_projects()
+        res = await self.relay._run_session_engine_tool({"op": "list", "args": {}})
+        self.assertIn("auth", res)
+        self.assertIn("database", res)
+        res = await self.relay._run_session_engine_tool({"op": "set_project", "args": {"project": "Auth"}})
+        self.assertIn("switched to 'Auth'", res)
+        self.assertEqual(self.engine.current_project, "Auth")
+
+    async def test_step_task_steers_by_project_not_dict_order(self):
+        await self._fork_two_projects()
+        # current cursor is Database (most recent fork). Explicit project wins:
+        res = await self.relay._run_step_task({"project": "Auth", "steer": "do the CSS first"})
+        self.assertIn("Steered:", res)
+        # default steers the CURRENT project when no explicit one given.
+        res2 = await self.relay._run_step_task({"steer": "go left"})
+        self.assertIn("Steered:", res2)
+
+    async def test_project_state_narration(self):
+        await self._fork_two_projects()
+        res = await self.relay._run_step_task({"project": "Auth"})
+        self.assertIn("Auth", res)
+        self.assertIn("auth-a", res)
+        # current-project fallback when no project supplied.
+        res2 = await self.relay._run_step_task({})
+        self.assertIn("Database", res2)
+        self.assertIn("db-a", res2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

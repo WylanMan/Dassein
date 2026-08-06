@@ -230,6 +230,60 @@ class TestSessionEngine(unittest.IsolatedAsyncioTestCase):
         r = await self.engine.abort_session(s.vid)
         self.assertIn("ABORTED", r)
 
+    # -- multi-project cursor ----------------------------------------------
+
+    async def test_fork_sets_and_flips_current_project(self):
+        self.engine = make_engine(self.root)
+        a = await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        self.assertEqual(self.engine.current_project, "Auth")
+        b = await self.engine.fork_session(goal="y", repo=self.repo, branch="db-a", project="Database")
+        # most-recent engagement wins
+        self.assertEqual(self.engine.current_project, "Database")
+        self.assertNotEqual(a.vid, b.vid)
+
+    async def test_set_project_cursor(self):
+        self.engine = make_engine(self.root)
+        await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        await self.engine.fork_session(goal="y", repo=self.repo, branch="db-a", project="Database")
+        r = self.engine.set_project("Auth")
+        self.assertIn("switched to 'Auth'", r)
+        self.assertEqual(self.engine.current_project, "Auth")
+        # unknown project -> terse error, cursor unchanged
+        r2 = self.engine.set_project("Nope")
+        self.assertTrue(r2.startswith("Error:"))
+        self.assertEqual(self.engine.current_project, "Auth")
+
+    async def test_vid_for_project_resolves(self):
+        self.engine = make_engine(self.root)
+        a = await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        await self.engine.fork_session(goal="y", repo=self.repo, branch="db-a", project="Database")
+        self.assertEqual(self.engine.vid_for_project("Auth"), a.vid)
+        self.assertIsNone(self.engine.vid_for_project("Nope"))
+        self.assertIsNone(self.engine.vid_for_project(None))
+
+    async def test_project_state_and_list_projects(self):
+        self.engine = make_engine(self.root)
+        a = await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        await self.engine.fork_session(goal="y", repo=self.repo, branch="db-a", project="Database")
+        state = self.engine.project_state("Auth")
+        self.assertIn("Auth", state)
+        self.assertIn(a.vid, state)
+        listing = self.engine.list_projects()
+        self.assertIn("auth", listing)
+        self.assertIn("database", listing)
+        # cursor marker on the most-recently-engaged project
+        self.assertIn("*database", listing)
+
+    async def test_session_tree_scope_by_project(self):
+        self.engine = make_engine(self.root)
+        a = await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        await self.engine.fork_session(goal="y", repo=self.repo, branch="auth-b", project="Auth", parent=a.vid)
+        await self.engine.fork_session(goal="z", repo=self.repo, branch="db-a", project="Database")
+        tree = self.engine.session_tree("Auth")
+        self.assertIn("auth-a", tree)
+        self.assertIn("auth-b", tree)
+        self.assertNotIn("db-a", tree)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

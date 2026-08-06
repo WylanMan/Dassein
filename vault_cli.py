@@ -386,7 +386,7 @@ class VaultCLI:
         plan = self._plan_path_for(project)
         text = plan.read_text(encoding="utf-8", errors="replace")
         front, _ = _split_frontmatter(text)
-        m = re.search(r"^status:\s*(.+?)\s*$", front, re.MULTILINE)
+        m = re.search(r"^status:[ \t]*(.+?)[ \t]*$", front, re.MULTILINE)
         return (m.group(1).strip() if m else "unknown").strip('"')
 
     def plan_set_status(self, project: str, status: str, phase: str | None = None) -> Path:

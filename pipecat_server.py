@@ -1222,31 +1222,29 @@ class ToolRelayProcessor(FrameProcessor):
 
     async def _run_step_task(self, args: dict) -> str:
         """step_task: report progress verbatim from the vault log + status, or
-        steer/abort a running plan."""
+        steer/abort a running plan. Project-aware: resolves the target via the
+        engine's current-project cursor or an explicit `project`, never by
+        dict-ordering guess (the old `_first_vid()` landmine)."""
         if self._orchestrator is None:
             self._ensure_orchestrator()
-        args = dict(args or {})
-        project = str(args.get("project") or "").strip() or None
-        if args.get("steer"):
-            return await self._orchestrator.steer_session(
-                str(args.get("steer_vid") or self._first_vid()), str(args.get("steer"))
-            ) if self._orchestrator else "Error: no orchestrator."
-        if args.get("abort"):
-            return await self._orchestrator.abort_session(
-                str(args.get("steer_vid") or self._first_vid())
-            ) if self._orchestrator else "Error: no orchestrator."
         if self._orchestrator is None:
             return "No plan is running yet — say 'plan <goal>' to start one."
-        tree = self._orchestrator.session_tree(
-            project or (self._first_vid() or "main")
-        )
-        status = ""
-        if project:
-            try:
-                status = "status: " + self._orchestrator.vault.plan_get_status(project)
-            except Exception:
-                status = ""
-        return self._orchestrator._cap(f"{tree}" + (f"; plan {status}" if status else ""))
+        eng = self._orchestrator
+        args = dict(args or {})
+        project = str(args.get("project") or "").strip() or eng.current_project
+        vid = str(args.get("steer_vid") or "").strip() or eng.vid_for_project(project)
+        if args.get("steer"):
+            if not vid:
+                return f"Error: no active session for project '{project or eng.current_project or '?'}'."
+            return await eng.steer_session(vid, str(args.get("steer")))
+        if args.get("abort"):
+            if not vid:
+                return f"Error: no active session for project '{project or eng.current_project or '?'}'."
+            return await eng.abort_session(vid)
+        # Plain status query: narrate the current project (or an explicit one).
+        if not project:
+            return eng.project_state(None)
+        return eng.project_state(project)
 
     def _first_vid(self) -> str | None:
         if self._orchestrator is None:
@@ -1278,25 +1276,60 @@ class ToolRelayProcessor(FrameProcessor):
                     dod=str(a.get("dod") or ""),
                 )
             if op == "steer":
-                return await eng.steer_session(str(a.get("vid") or ""), str(a.get("message") or ""))
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
+                )
+                if not vid:
+                    return "Error: steer needs a vid or an active project."
+                return await eng.steer_session(vid, str(a.get("message") or ""))
             if op == "abort":
-                return await eng.abort_session(str(a.get("vid") or ""))
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
+                )
+                if not vid:
+                    return "Error: abort needs a vid or an active project."
+                return await eng.abort_session(vid)
             if op == "abandon":
-                return await eng.abandon_session(str(a.get("vid") or ""))
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
+                )
+                if not vid:
+                    return "Error: abandon needs a vid or an active project."
+                return await eng.abandon_session(vid)
             if op == "sync":
-                r = await eng.sync_session(str(a.get("vid") or ""))
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
+                )
+                if not vid:
+                    return "Error: sync needs a vid or an active project."
+                r = await eng.sync_session(vid)
                 return ("OK: sync clean" if r.clean
                         else f"Conflict(s) — merge blocked: " + ", ".join(r.conflict_files[:5]))
             if op == "approve":
-                return await eng.approve_merge(str(a.get("vid") or ""))
-            if op == "merge":
-                return await eng.merge_session(
-                    str(a.get("vid") or ""), strategy=str(a.get("strategy") or "ff")
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
                 )
+                if not vid:
+                    return "Error: approve needs a vid or an active project."
+                return await eng.approve_merge(vid)
+            if op == "merge":
+                vid = str(a.get("vid") or "").strip() or eng.vid_for_project(
+                    a.get("project") or eng.current_project
+                )
+                if not vid:
+                    return "Error: merge needs a vid or an active project."
+                return await eng.merge_session(vid, strategy=str(a.get("strategy") or "ff"))
             if op == "tree":
                 return eng.session_tree(
-                    str(a.get("project") or ""), root=a.get("root") or None
+                    str(a.get("project") or eng.current_project or ""),
+                    root=a.get("root") or None,
                 )
+            if op == "set_project":
+                return eng.set_project(str(a.get("project") or "").strip() or None)
+            if op == "list":
+                return eng.list_projects()
+            if op == "state":
+                return eng.project_state(str(a.get("project") or "").strip() or None)
             return f"Error: unknown session op {op}"
         except Exception as e:
             return f"Error: session op {op}: {e}"

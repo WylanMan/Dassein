@@ -97,6 +97,9 @@ class SessionEngine:
         self._sessions: dict[str, Session] = {}
         self._approved: set[str] = set()          # vids approved for merge this lifetime (G2)
         self._last_sync: dict[str, RebaseResult] = {}  # last sync result per vid
+        # Multi-project cursor: whichever project the user most recently engaged
+        # with. Defaults to None until the first fork / explicit set_project.
+        self.current_project: str | None = None
         self.progress_cb = None                    # async callable(ev) for live narration
 
     # -- shell helper --------------------------------------------------------
@@ -279,6 +282,8 @@ class SessionEngine:
         except Exception as e:
             self.log(vid, "forked", f"baseline sync failed: {e}")
         self.log(vid, "forked", goal)
+        # Most-recent engagement wins: forking flips the project cursor.
+        self.current_project = s.project
         return s
 
     async def run_in_worktree(self, vid: str, task: str, dod: str = "") -> str:
@@ -453,7 +458,7 @@ class SessionEngine:
         """C6 deterministic graph-walk: follow `child:` frontmatter iteratively
         (depth <= 8, visited-set cycle guard). Returns a compact speakable tree."""
         proj = _slugify(project)
-        start = root or next(iter(self._sessions), None)
+        start = root or self.vid_for_project(project)
         if not start:
             return f"No sessions for project {project}."
         visited: set[str] = set()
@@ -478,7 +483,7 @@ class SessionEngine:
             text = node.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return "unknown"
-        m = re.search(r"^status:\s*(.+?)\s*$", text, re.MULTILINE)
+        m = re.search(r"^status:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
         return m.group(1).strip() if m else "unknown"
 
     def _node_child(self, proj: str, vid: str) -> str | None:
@@ -487,7 +492,7 @@ class SessionEngine:
             text = node.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
-        m = re.search(r"^child:\s*(.+?)\s*$", text, re.MULTILINE)
+        m = re.search(r"^child:[ \t]*(.+?)[ \t]*$", text, re.MULTILINE)
         if not m:
             return None
         val = m.group(1).strip().strip('"')
@@ -505,6 +510,59 @@ class SessionEngine:
             return text
         return text[:max_chars] + "…"
 
+    # -- multi-project cursor (voice disambiguation) ------------------------
+
+    def set_project(self, name: str | None) -> str:
+        """Flip the current-project cursor. Returns a narratable ack."""
+        slug = _slugify(name or "") if name else ""
+        held = {_slugify(s.project) for s in self._sessions.values()}
+        if slug and slug not in held:
+            return f"Error: no active session for project '{name}'."
+        self.current_project = name or None
+        return f"OK: switched to '{name or 'no active project'}'."
+
+    def vid_for_project(self, name: str | None) -> str | None:
+        """Resolve the active worker `vid` for a project (stable first fork).
+        Returns None if the project has no held session or the name is empty."""
+        if not name:
+            return None
+        slug = _slugify(name)
+        for vid, s in self._sessions.items():
+            if _slugify(s.project) == slug:
+                return vid
+        return None
+
+    def project_state(self, name: str | None) -> str:
+        """A speakable snapshot of one project (its session tree). Falls back to the
+        current-project cursor when name is None; errors if nothing is active."""
+        proj = name or self.current_project
+        if not proj:
+            return "No active project yet — start one with plan_work."
+        vid = self.vid_for_project(proj)
+        tree = self.session_tree(proj, root=vid)
+        status = ""
+        try:
+            status = self.vault.plan_get_status(proj)
+        except Exception:
+            status = "unknown"
+        return f"{proj} ({status}): {tree}"
+
+    def list_projects(self) -> str:
+        """Deterministic overview of every active project + its session status,
+        marking the current cursor. Voice-navigable for switching context."""
+        active: list[str] = []
+        projects = sorted({_slugify(s.project) for s in self._sessions.values()})
+        for slug in projects:
+            vids = [vid for vid, s in self._sessions.items() if _slugify(s.project) == slug]
+            statuses = ", ".join(
+                f"{self._sessions[v].branch}({self._sessions[v].status})" for v in vids
+            )
+            marker = "*" if (self.current_project and _slugify(self.current_project) == slug) else ""
+            active.append(f"{marker}{slug}: {statuses}")
+        if not active:
+            return "No active projects."
+        return "; ".join(active)
+
 
 def scaffold_session_tool() -> dict:
     """Tool schema(s) exposed BEHIND plan_work (heavy schema, never in the voice
@@ -516,7 +574,8 @@ def scaffold_session_tool() -> dict:
         "description": (
             "Fork or drive a git-worktree worker session: fork a task, run it, "
             "steer/abort/abandon it, sync to main (rebase), approve a merge, or "
-            "merge. Each fork is an inline self-reasoning worker; merges require "
+            "merge. Switch or list active projects with set_project / list / state. "
+            "Each fork is an inline self-reasoning worker; merges require "
             "explicit approval and a clean sync first."
         ),
         "parameters": {
@@ -527,6 +586,7 @@ def scaffold_session_tool() -> dict:
                     "enum": [
                         "fork", "run", "steer", "abort", "abandon",
                         "sync", "approve", "merge", "tree",
+                        "set_project", "list", "state",
                     ],
                     "description": "The session operation to run",
                 },
