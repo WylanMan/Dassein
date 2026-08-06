@@ -157,8 +157,10 @@ class VaultCLI:
         lines = ["---"]
         lines.append(f"title: {str(title).strip() or target.stem}")
         lines.append(f"date: {now:%Y-%m-%d}")
-        lines.append("type: note")
         front = front or {}
+        # `type` (and any reserved key passed in) overrides the default.
+        note_type = str(front.pop("type", "note"))
+        lines.append(f"type: {note_type}")
         for k in ["tags"]:
             v = front.get(k)
             if v is not None:
