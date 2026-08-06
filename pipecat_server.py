@@ -1200,7 +1200,14 @@ class ToolRelayProcessor(FrameProcessor):
         if not goal:
             return "Error: plan_work requires a goal."
         project = str((args or {}).get("project") or goal).strip()
-        repo = Path(str((args or {}).get("repo") or ROOT)).expanduser().resolve()
+        # Default the target repo to the project's registered repo, else the host root.
+        repo_arg = str((args or {}).get("repo") or "").strip()
+        if repo_arg:
+            repo = Path(repo_arg).expanduser().resolve()
+        else:
+            known = self._orchestrator.vault.project_repo(project)
+            repo = known if (known is not None and known.is_dir()) else ROOT
+        repo = Path(repo).expanduser().resolve()
         vault = self._orchestrator.vault
         # 1) scaffold the project + plan draft in the vault (contract).
         vault.ensure_project(project)
@@ -1330,6 +1337,12 @@ class ToolRelayProcessor(FrameProcessor):
                 return eng.list_projects()
             if op == "state":
                 return eng.project_state(str(a.get("project") or "").strip() or None)
+            if op == "register":
+                name = str(a.get("project") or a.get("name") or "").strip()
+                if not name:
+                    return "Error: register needs a project name."
+                repo = str(a.get("repo") or "").strip() or None
+                return self._orchestrator.vault.register_project(name, repo=repo)
             return f"Error: unknown session op {op}"
         except Exception as e:
             return f"Error: session op {op}: {e}"

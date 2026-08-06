@@ -107,19 +107,104 @@ class VaultCLI:
         Also creates `projects/<slug>/sessions/` so fork nodes have a home.
         Idempotent: re-calling returns the same dir without erroring.
         """
+        return self._ensure_project_dir(name, repo=None)[0]
+
+    def register_project(self, name: str, repo: str | Path | None = None) -> str:
+        """Register a known project so the voice agent can see/introspect it even
+        before any session is forked. Creates the vault project skeleton and stamps
+        `repo:` in plan frontmatter (the target repo roots future forks).
+
+        Returns a capped, narratable string (a terse error string on failure)."""
+        slug = _slugify(name) or f"proj-{datetime.now():%Y%m%d%H%M%S}"
+        pdir, plan = self._ensure_project_dir(name, repo=repo)
+        return f"OK: registered project '{slug}' at {self._vault_rel(pdir)}"
+
+    def known_projects(self) -> list[dict]:
+        """List every project that exists in the vault (registered or forked), each
+        with its slug, title, plan status, and stored repo root. Deterministic order.
+        This is the source of truth for the voice agent's project list."""
+        base = self.vault / "projects"
+        out: list[dict] = []
+        if not base.is_dir():
+            return out
+        for pdir in sorted(base.iterdir()):
+            if not pdir.is_dir() or pdir.name in {".trash", ".git"}:
+                continue
+            plan = pdir / "plan.md"
+            title = pdir.name
+            status = "unknown"
+            repo = ""
+            if plan.exists():
+                text = plan.read_text(encoding="utf-8", errors="replace")
+                front, _ = _split_frontmatter(text)
+                m = re.search(r"^title:[ \t]*(.+?)[ \t]*$", front, re.MULTILINE)
+                if m:
+                    title = m.group(1).strip().strip('"')
+                m = re.search(r"^status:[ \t]*(.+?)[ \t]*$", front, re.MULTILINE)
+                if m:
+                    status = m.group(1).strip().strip('"')
+                m = re.search(r"^repo:[ \t]*(.+?)[ \t]*$", front, re.MULTILINE)
+                if m:
+                    repo = m.group(1).strip().strip('"')
+            out.append({"slug": pdir.name, "title": title, "status": status, "repo": repo})
+        return out
+
+    def project_repo(self, project: str) -> Path | None:
+        """Return the registered repo root for a project, if any."""
+        slug = _slugify(project)
+        plan = self._plan_path(slug)
+        if not plan.exists():
+            return None
+        text = plan.read_text(encoding="utf-8", errors="replace")
+        front, _ = _split_frontmatter(text)
+        m = re.search(r"^repo:[ \t]*(.+?)[ \t]*$", front, re.MULTILINE)
+        if not m:
+            return None
+        val = m.group(1).strip().strip('"')
+        return Path(val).expanduser().resolve() if val else None
+
+    def _ensure_project_dir(self, name: str, repo: str | Path | None) -> tuple[Path, Path]:
+        """Core scaffold: create projects/<slug>/ + sessions/ + plan.md skeleton, and
+        stamp repo: when given. Returns (project_dir, plan_path). Idempotent."""
         name = (name or "").strip()
         if not name:
-            return self.vault / "projects" / "_untitled"
+            name = "_untitled"
         slug = _slugify(name) or f"proj-{datetime.now():%Y%m%d%H%M%S}"
         pdir = self.vault / "projects" / slug
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "sessions").mkdir(parents=True, exist_ok=True)
-        plan = self._plan_path(slug)
+        plan = pdir / "plan.md"
         if not plan.exists():
             plan.write_text(
                 PLAN_TEMPLATE.format(title=name, slug=slug), encoding="utf-8"
             )
-        return pdir
+        if repo:
+            self._stamp_plan_meta(slug, "repo", str(repo))
+        return pdir, plan
+
+    def _stamp_plan_meta(self, slug: str, key: str, value: str):
+        """Frontmatter edit-only (G1): stamp or update a scalar meta field on a plan.
+        Value is quoted so paths with spaces stay valid YAML."""
+        plan = self._plan_path(slug)
+        text = plan.read_text(encoding="utf-8", errors="replace")
+        front, body = _split_frontmatter(text)
+        def _set(block: str, k: str, v: str) -> str:
+            lines = block.split("\n")
+            repl = False
+            for i, ln in enumerate(lines):
+                if re.match(rf"^{re.escape(k)}:[ \t]*", ln):
+                    lines[i] = f"{k}: \"{v}\""
+                    repl = True
+                    break
+            if not repl:
+                ins = 0
+                for i, ln in enumerate(lines):
+                    if ln.startswith("status:") or ln.startswith("type:"):
+                        ins = i + 1
+                lines.insert(ins, f"{k}: \"{v}\"")
+            return "\n".join(lines)
+        front = _set(front, key, value)
+        plan.write_text(f"---\n{front}\n---\n{body}", encoding="utf-8")
 
     def _plan_path(self, project: str) -> Path:
         return self.vault / "projects" / _slugify(project) / "plan.md"

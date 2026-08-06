@@ -241,9 +241,15 @@ class SessionEngine:
         vault node, auto-run baseline sync_session(), log "forked"."""
         branch = (branch or (_slugify(goal) or f"wk-{datetime.now():%Y%m%d%H%M%S}"))
         project = project or branch
+        # Default the target repo to the project's registered repo when none is given,
+        # so forks of a registered project happen in ITS repo (not the voice host's).
         repo = Path(repo).expanduser().resolve()
         if not repo.is_dir():
-            raise ValueError(f"repo not found: {repo}")
+            known_repo = self.vault.project_repo(project)
+            if known_repo is not None and known_repo.is_dir():
+                repo = known_repo
+            else:
+                raise ValueError(f"repo not found: {repo}")
         # git worktree add <tmp>/dassein-<branch> -b <branch>
         tmp = repo / f".dassein-worktrees"
         tmp.mkdir(parents=True, exist_ok=True)
@@ -513,11 +519,13 @@ class SessionEngine:
     # -- multi-project cursor (voice disambiguation) ------------------------
 
     def set_project(self, name: str | None) -> str:
-        """Flip the current-project cursor. Returns a narratable ack."""
+        """Flip the current-project cursor. Accepts any registered/known project
+        (idle or active). Returns a narratable ack."""
         slug = _slugify(name or "") if name else ""
         held = {_slugify(s.project) for s in self._sessions.values()}
-        if slug and slug not in held:
-            return f"Error: no active session for project '{name}'."
+        known = {k["slug"] for k in self.vault.known_projects()}
+        if slug and slug not in held and slug not in known:
+            return f"Error: unknown project '{name}'."
         self.current_project = name or None
         return f"OK: switched to '{name or 'no active project'}'."
 
@@ -533,8 +541,8 @@ class SessionEngine:
         return None
 
     def project_state(self, name: str | None) -> str:
-        """A speakable snapshot of one project (its session tree). Falls back to the
-        current-project cursor when name is None; errors if nothing is active."""
+        """A speakable snapshot of one project (its session tree + plan status). Falls
+        back to the current-project cursor when name is None."""
         proj = name or self.current_project
         if not proj:
             return "No active project yet — start one with plan_work."
@@ -548,19 +556,34 @@ class SessionEngine:
         return f"{proj} ({status}): {tree}"
 
     def list_projects(self) -> str:
-        """Deterministic overview of every active project + its session status,
-        marking the current cursor. Voice-navigable for switching context."""
+        """Deterministic overview of every project known to the vault or with active
+        sessions, marking the current cursor. Voice-navigable for switching context.
+        Known-but-idle registered projects show as `<slug> (registered, status)`."""
         active: list[str] = []
-        projects = sorted({_slugify(s.project) for s in self._sessions.values()})
-        for slug in projects:
-            vids = [vid for vid, s in self._sessions.items() if _slugify(s.project) == slug]
+        session_slugs = {_slugify(s.project) for s in self._sessions.values()}
+        for known in self.vault.known_projects():
+            slug = known["slug"]
+            marker = "*" if (
+                self.current_project and _slugify(self.current_project) == slug
+            ) else ""
+            if slug in session_slugs:
+                vids = [v for v, s in self._sessions.items() if _slugify(s.project) == slug]
+                statuses = ", ".join(
+                    f"{self._sessions[v].branch}({self._sessions[v].status})" for v in vids
+                )
+                active.append(f"{marker}{slug}: {statuses}")
+            else:
+                active.append(f"{marker}{slug} (registered, {known['status']})")
+        # Any active session whose project isn't (yet) a vault project gets listed too.
+        known_slugs = {k["slug"] for k in self.vault.known_projects()}
+        for slug in sorted(session_slugs - known_slugs):
+            vids = [v for v, s in self._sessions.items() if _slugify(s.project) == slug]
             statuses = ", ".join(
                 f"{self._sessions[v].branch}({self._sessions[v].status})" for v in vids
             )
-            marker = "*" if (self.current_project and _slugify(self.current_project) == slug) else ""
-            active.append(f"{marker}{slug}: {statuses}")
+            active.append(f"{slug}: {statuses}")
         if not active:
-            return "No active projects."
+            return "No projects yet — register one or start plan_work."
         return "; ".join(active)
 
 
@@ -574,7 +597,8 @@ def scaffold_session_tool() -> dict:
         "description": (
             "Fork or drive a git-worktree worker session: fork a task, run it, "
             "steer/abort/abandon it, sync to main (rebase), approve a merge, or "
-            "merge. Switch or list active projects with set_project / list / state. "
+            "merge. Register a project by name+repo, or switch/list active projects "
+            "with register / set_project / list / state. "
             "Each fork is an inline self-reasoning worker; merges require "
             "explicit approval and a clean sync first."
         ),
@@ -586,7 +610,7 @@ def scaffold_session_tool() -> dict:
                     "enum": [
                         "fork", "run", "steer", "abort", "abandon",
                         "sync", "approve", "merge", "tree",
-                        "set_project", "list", "state",
+                        "set_project", "list", "state", "register",
                     ],
                     "description": "The session operation to run",
                 },

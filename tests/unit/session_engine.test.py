@@ -284,6 +284,23 @@ class TestSessionEngine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("auth-b", tree)
         self.assertNotIn("db-a", tree)
 
+    async def test_list_projects_includes_registered_idle(self):
+        self.engine = make_engine(self.root)
+        # A known-but-idle project (registered in the vault, no session yet).
+        self.engine.vault.register_project("Ironman", repo=self.repo)
+        await self.engine.fork_session(goal="x", repo=self.repo, branch="auth-a", project="Auth")
+        listing = self.engine.list_projects()
+        self.assertIn("ironman (registered", listing)
+        self.assertIn("auth", listing)
+
+    async def test_fork_defaults_to_registered_repo(self):
+        self.engine = make_engine(self.root)
+        self.engine.vault.register_project("Ironman", repo=self.repo)
+        # fork WITHOUT a repo path should resolve to the registered repo.
+        s = await self.engine.fork_session(goal="x", repo=Path("/nonexistent"), project="Ironman")
+        self.assertEqual(s.repo, self.repo.resolve())
+        self.assertTrue(s.wt_path.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

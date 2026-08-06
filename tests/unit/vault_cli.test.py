@@ -167,6 +167,34 @@ class TestVaultCLI(unittest.TestCase):
         self.assertEqual(_slugify("Coffee Preference"), "coffee-preference")
         self.assertEqual(_slugify("  Spiky   Object 1 "), "spiky-object-1")
 
+    # -- project registry (known_projects / register / repo) ------------
+
+    def test_register_project_creates_skeleton_and_repo(self):
+        with tempfile.TemporaryDirectory() as repo:
+            repo_root = Path(repo)  # pretend an external git repo
+            res = self.cli.register_project("Dassein", repo=repo_root)
+            self.assertTrue(res.startswith("OK: registered project"))
+            known = self.cli.known_projects()
+            self.assertTrue(any(k["slug"] == "dassein" for k in known))
+            self.assertEqual(self.cli.project_repo("Dassein"), repo_root.resolve())
+
+    def test_known_projects_includes_idle_registered(self):
+        self.cli.plan_draft("Auth", "")
+        known = self.cli.known_projects()
+        self.assertTrue(any(k["slug"] == "auth" for k in known))
+        auth = next(k for k in known if k["slug"] == "auth")
+        self.assertEqual(auth["title"], "Auth")
+        self.assertEqual(auth["status"], "drafting")
+
+    def test_register_project_is_idempotent(self):
+        self.cli.register_project("X")
+        self.cli.register_project("X")
+        self.assertEqual(len([k for k in self.cli.known_projects() if k["slug"] == "x"]), 1)
+
+    def test_project_repo_returns_none_when_unset(self):
+        self.cli.plan_draft("NoRepo", "")
+        self.assertIsNone(self.cli.project_repo("NoRepo"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

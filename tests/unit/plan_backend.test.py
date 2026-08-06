@@ -213,6 +213,15 @@ class TestPlanHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Database", res2)
         self.assertIn("db-a", res2)
 
+    async def test_register_op_lists_registered_project(self):
+        # register a known external project through the session_engine dispatch.
+        res = await self.relay._run_session_engine_tool({
+            "op": "register", "args": {"project": "Ironman", "repo": str(self.repo)}
+        })
+        self.assertTrue(res.startswith("OK: registered project"))
+        lst = await self.relay._run_session_engine_tool({"op": "list", "args": {}})
+        self.assertIn("ironman (registered", lst)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
