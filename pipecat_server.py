@@ -1672,6 +1672,25 @@ async def voice_health():
     }
 
 
+@app.get("/api/voice/tools")
+async def voice_tools():
+    """G5 latency guard: expose the always-hot voice prefill + its estimated token
+    size so the e2e suite (and ops) can assert the serialized prefill stays under
+    VOICE_SCHEMA_TOKEN_BUDGET. Behind-the-wall and lazy plan tools are listed but
+    not counted in the hot budget."""
+    hot = sorted(t.name for t in TOOL_SCHEMAS)
+    lazy = sorted(t.name for t in LAZY_PLAN_SCHEMAS)
+    tokens = estimate_schema_tokens(TOOL_SCHEMAS)
+    return {
+        "hot_tools": hot,
+        "hot_count": len(hot),
+        "lazy_plan_tools": lazy,
+        "hot_schema_tokens": tokens,
+        "schema_token_budget": VOICE_SCHEMA_TOKEN_BUDGET,
+        "within_budget": tokens <= VOICE_SCHEMA_TOKEN_BUDGET,
+    }
+
+
 @app.get("/")
 async def root():
     return {
